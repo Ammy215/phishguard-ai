@@ -299,6 +299,189 @@ const Scanner = () => {
             </div>
           )}
 
+          {/* Threat Intelligence Checks */}
+          {result?.checks && (
+            <div className="mt-6 border-t border-gray-700 pt-6">
+              <div className="flex items-center gap-2.5 mb-4">
+                <div
+                  className="w-5 h-5 rounded flex items-center justify-center text-xs font-bold"
+                  style={{
+                    background: "rgba(99, 102, 241, 0.2)",
+                    color: "#818cf8",
+                  }}
+                >
+                  ⚡
+                </div>
+                <span className="text-[10px] font-bold uppercase" style={{ color: "#475569", letterSpacing: "0.12em" }}>
+                  Threat Intelligence
+                </span>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-3">
+                {/* WHOIS Age */}
+                {result.checks.whois_age && (
+                  <div
+                    className="rounded-lg p-3.5"
+                    style={{
+                      background: "#0f172a",
+                      border: "1px solid rgba(148,163,184,0.06)",
+                    }}
+                  >
+                    <div className="text-[11px] font-bold mb-2" style={{ color: "#94a3b8" }}>
+                      Domain Age
+                    </div>
+                    <div className="text-sm font-semibold" style={{
+                      color: result.checks.whois_age.age_days && result.checks.whois_age.age_days < 180 ? "#f87171" : "#34d399"
+                    }}>
+                      {result.checks.whois_age.age_days ? `${result.checks.whois_age.age_days} days` : "Unknown"}
+                    </div>
+                    <div className="text-xs mt-1" style={{ color: "#64748b" }}>
+                      {result.checks.whois_age.details}
+                    </div>
+                  </div>
+                )}
+
+                {/* Domain Similarity */}
+                {result.checks.domain_similarity && (
+                  <div
+                    className="rounded-lg p-3.5"
+                    style={{
+                      background: "#0f172a",
+                      border: `1px solid ${result.checks.domain_similarity.is_similar ? "rgba(239,68,68,0.15)" : "rgba(148,163,184,0.06)"}`,
+                    }}
+                  >
+                    <div className="text-[11px] font-bold mb-2" style={{ color: "#94a3b8" }}>
+                      Brand Similarity
+                    </div>
+                    <div className="text-sm font-semibold" style={{
+                      color: result.checks.domain_similarity.is_similar ? "#f87171" : "#34d399"
+                    }}>
+                      {result.checks.domain_similarity.matched_brand ? `${result.checks.domain_similarity.matched_brand} (${((result.checks.domain_similarity.similarity ?? 0) * 100).toFixed(1)}%)` : "Clean"}
+                    </div>
+                    <div className="text-xs mt-1" style={{ color: "#64748b" }}>
+                      {result.checks.domain_similarity.details}
+                    </div>
+                  </div>
+                )}
+
+                {/* Google Safe Browsing */}
+                {result.checks.google_safe_browsing && (
+                  <div
+                    className="rounded-lg p-3.5"
+                    style={{
+                      background: "#0f172a",
+                      border: `1px solid ${result.checks.google_safe_browsing.flagged ? "rgba(239,68,68,0.15)" : "rgba(148,163,184,0.06)"}`,
+                    }}
+                  >
+                    <div className="text-[11px] font-bold mb-2" style={{ color: "#94a3b8" }}>
+                      Google Safe Browsing
+                    </div>
+                    <div className="text-sm font-semibold" style={{
+                      color: result.checks.google_safe_browsing.flagged ? "#f87171" : "#34d399"
+                    }}>
+                      {result.checks.google_safe_browsing.flagged ? "⚠️ Flagged" : "✓ Safe"}
+                    </div>
+                    <div className="text-xs mt-1" style={{ color: "#64748b" }}>
+                      {result.checks.google_safe_browsing.details}
+                    </div>
+                  </div>
+                )}
+
+                {/* PhishTank */}
+                {result.checks.phishtank && (
+                  <div
+                    className="rounded-lg p-3.5"
+                    style={{
+                      background: "#0f172a",
+                      border: `1px solid ${result.checks.phishtank.found ? "rgba(239,68,68,0.15)" : "rgba(148,163,184,0.06)"}`,
+                    }}
+                  >
+                    <div className="text-[11px] font-bold mb-2" style={{ color: "#94a3b8" }}>
+                      PhishTank
+                    </div>
+                    <div className="text-sm font-semibold" style={{
+                      color: result.checks.phishtank.found ? "#f87171" : "#34d399"
+                    }}>
+                      {result.checks.phishtank.found ? "⚠️ Found" : "✓ Not found"}
+                    </div>
+                    <div className="text-xs mt-1" style={{ color: "#64748b" }}>
+                      {result.checks.phishtank.details}
+                    </div>
+                  </div>
+                )}
+
+                {/* OpenPhish */}
+                {result.checks.openphish && (
+                  <div
+                    className="rounded-lg p-3.5"
+                    style={{
+                      background: "#0f172a",
+                      border: `1px solid ${result.checks.openphish.found ? "rgba(239,68,68,0.15)" : "rgba(148,163,184,0.06)"}`,
+                    }}
+                  >
+                    <div className="text-[11px] font-bold mb-2" style={{ color: "#94a3b8" }}>
+                      OpenPhish Feed
+                    </div>
+                    <div className="text-sm font-semibold" style={{
+                      color: result.checks.openphish.found ? "#f87171" : "#34d399"
+                    }}>
+                      {result.checks.openphish.found ? "⚠️ Found" : "✓ Not found"}
+                    </div>
+                    <div className="text-xs mt-1" style={{ color: "#64748b" }}>
+                      {result.checks.openphish.details}
+                    </div>
+                  </div>
+                )}
+
+                {/* Redirect Chain */}
+                {result.checks.redirects && (
+                  <div
+                    className="rounded-lg p-3.5"
+                    style={{
+                      background: "#0f172a",
+                      border: `1px solid ${(result.checks.redirects.redirect_count ?? 0) > 2 ? "rgba(245,158,11,0.15)" : "rgba(148,163,184,0.06)"}`,
+                    }}
+                  >
+                    <div className="text-[11px] font-bold mb-2" style={{ color: "#94a3b8" }}>
+                      Redirect Chain
+                    </div>
+                    <div className="text-sm font-semibold" style={{
+                      color: (result.checks.redirects.redirect_count ?? 0) > 3 ? "#f87171" : ((result.checks.redirects.redirect_count ?? 0) > 2 ? "#f59e0b" : "#34d399")
+                    }}>
+                      {result.checks.redirects.redirect_count ?? 0} redirects
+                    </div>
+                    <div className="text-xs mt-1" style={{ color: "#64748b" }}>
+                      {result.checks.redirects.details}
+                    </div>
+                  </div>
+                )}
+
+                {/* Shortened URL */}
+                {result.checks.shortened_url && (
+                  <div
+                    className="rounded-lg p-3.5"
+                    style={{
+                      background: "#0f172a",
+                      border: `1px solid ${result.checks.shortened_url.is_shortened ? "rgba(245,158,11,0.15)" : "rgba(148,163,184,0.06)"}`,
+                    }}
+                  >
+                    <div className="text-[11px] font-bold mb-2" style={{ color: "#94a3b8" }}>
+                      Shortened URL
+                    </div>
+                    <div className="text-sm font-semibold" style={{
+                      color: result.checks.shortened_url.is_shortened ? "#f59e0b" : "#34d399"
+                    }}>
+                      {result.checks.shortened_url.is_shortened ? `⚠️ ${result.checks.shortened_url.shortener}` : "✓ No"}
+                    </div>
+                    <div className="text-xs mt-1" style={{ color: "#64748b" }}>
+                      {result.checks.shortened_url.details}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* WHOIS */}
           {whoisData && (
             <div className="mt-5">

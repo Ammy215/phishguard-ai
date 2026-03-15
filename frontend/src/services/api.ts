@@ -1,15 +1,36 @@
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
 // -- Types ------------------------------------------------------------------
+export interface ThreatCheck {
+  status: "ok" | "error" | "unavailable";
+  risk: number;
+  details: string;
+  [key: string]: any;
+}
+
+export interface ThreatChecks {
+  whois_age?: ThreatCheck & { age_days?: number };
+  google_safe_browsing?: ThreatCheck & { flagged?: boolean };
+  phishtank?: ThreatCheck & { found?: boolean };
+  domain_similarity?: ThreatCheck & { is_similar?: boolean; matched_brand?: string; similarity?: number };
+  redirects?: ThreatCheck & { redirect_count?: number; final_url?: string };
+  shortened_url?: ThreatCheck & { is_shortened?: boolean; shortener?: string; expanded_url?: string };
+  openphish?: ThreatCheck & { found?: boolean };
+}
+
 export interface PredictResponse {
-  url:            string;
-  result:         "phishing" | "legitimate";
-  confidence:     number;
-  ml_score:       number;
-  rule_score:     number;
-  combined_score: number;
-  risk_level:     "safe" | "low" | "medium" | "high" | "critical";
-  flags:          string[];
+  url:               string;
+  result:            "phishing" | "legitimate";
+  confidence:        number;
+  ml_score:          number;
+  rule_score:        number;
+  combined_score:    number;
+  risk_level:        "safe" | "low" | "medium" | "high" | "critical";
+  risk_level_normalized?: "SAFE" | "SUSPICIOUS" | "PHISHING";
+  ml_prediction?:    string;
+  risk_score?:       number;
+  flags:             string[];
+  checks?:           ThreatChecks;
 }
 
 export interface ChatResponse {

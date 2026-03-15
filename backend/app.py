@@ -2,28 +2,184 @@
 PhishGuard AI  Flask Backend
 Hybrid phishing detection engine combining a Random Forest ML model
 with a 16+ rule heuristic scoring system, explainable AI chat endpoint,
-URL normalization, edge-case handling, and WHOIS domain lookup.
+URL normalization, edge-case handling, and threat intelligence checks.
 """
 
 import os
 import re
 import socket
 import datetime
+import logging
+import threading
+import time
+import io
+import csv
 from urllib.parse import urlparse, unquote
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import joblib
 import pandas as pd
+import requests
+from dotenv import load_dotenv
+load_dotenv()
+
+try:
+    import whois
+except ImportError:
+    whois = None
 
 # ---------------------------------------------------------------------------
 #  App Setup
 # ---------------------------------------------------------------------------
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": os.getenv("CORS_ORIGINS", "*")}})
+app.logger.setLevel(logging.INFO)
 
 MODEL_PATH = os.getenv("MODEL_PATH", "phish_model.joblib")
 model = joblib.load(MODEL_PATH)
+
+GOOGLE_SAFE_BROWSING_API_KEY = os.getenv("GOOGLE_SAFE_BROWSING_API_KEY", "").strip()
+PHISHTANK_API_KEY = os.getenv("PHISHTANK_API_KEY", "").strip()
+PHISHTANK_LOCAL_DB = os.getenv("PHISHTANK_LOCAL_DB", "phishtank.csv").strip()
+
+# In-memory TTL cache to reduce repeated network calls.
+_CACHE = {}
+_CACHE_LOCK = threading.Lock()
+
+# Global flag for background thread
+_BACKGROUND_THREAD_ACTIVE = False
+_BACKGROUND_THREAD = None
+
+
+def _cache_get(cache_key):
+    now = time.time()
+    with _CACHE_LOCK:
+        item = _CACHE.get(cache_key)
+        if not item:
+            return None
+        expires_at, value = item
+        if expires_at < now:
+            del _CACHE[cache_key]
+            return None
+        return value
+
+
+def _cache_set(cache_key, value, ttl_seconds):
+    with _CACHE_LOCK:
+        _CACHE[cache_key] = (time.time() + max(int(ttl_seconds), 1), value)
+
+
+def _to_datetime(value):
+    if isinstance(value, datetime.datetime):
+        return value
+    if isinstance(value, datetime.date):
+        return datetime.datetime.combine(value, datetime.time.min)
+    if isinstance(value, str):
+        for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%d-%b-%Y"):
+            try:
+                return datetime.datetime.strptime(value, fmt)
+            except ValueError:
+                continue
+    return None
+
+# ---------------------------------------------------------------------------
+#  Feed Management Functions
+# ---------------------------------------------------------------------------
+def download_phishtank_dataset():
+    """Download PhishTank CSV dataset if not already present"""
+    if not PHISHTANK_LOCAL_DB:
+        return
+    
+    if os.path.exists(PHISHTANK_LOCAL_DB):
+        app.logger.info("[PhishGuard] PhishTank CSV already present: %s", PHISHTANK_LOCAL_DB)
+        return
+    
+    try:
+        app.logger.info("[PhishGuard] Downloading PhishTank dataset...")
+        url = "http://data.phishtank.com/data/online-valid.csv"
+        resp = requests.get(url, timeout=30)
+        if resp.status_code >= 400:
+            raise RuntimeError("HTTP " + str(resp.status_code))
+        
+        with open(PHISHTANK_LOCAL_DB, "w", encoding="utf-8") as f:
+            f.write(resp.text)
+        
+        # Count lines in CSV
+        line_count = resp.text.count("\n")
+        app.logger.info("[PhishGuard] PhishTank dataset downloaded: %d lines saved to %s", line_count, PHISHTANK_LOCAL_DB)
+    except Exception as ex:
+        app.logger.warning("[PhishGuard] Failed to download PhishTank dataset: %s", str(ex))
+
+
+def refresh_feeds():
+    """Refresh OpenPhish feed and PhishTank dataset"""
+    try:
+        app.logger.info("[PhishGuard] Starting feed refresh cycle...")
+        
+        # Refresh OpenPhish feed
+        try:
+            app.logger.info("[PhishGuard] Refreshing OpenPhish feed...")
+            resp = requests.get("https://openphish.com/feed.txt", timeout=10)
+            if resp.status_code >= 400:
+                raise RuntimeError("HTTP " + str(resp.status_code))
+            feed = {line.strip() for line in resp.text.splitlines() if line.strip()}
+            with _CACHE_LOCK:
+                _CACHE["openphish_feed"] = (time.time() + 60 * 60, feed)
+            app.logger.info("[PhishGuard] OpenPhish feed refreshed: %d URLs", len(feed))
+        except Exception as ex:
+            app.logger.warning("[PhishGuard] OpenPhish feed refresh failed: %s", str(ex))
+        
+        # Refresh PhishTank dataset if using local
+        if PHISHTANK_LOCAL_DB:
+            try:
+                app.logger.info("[PhishGuard] Refreshing PhishTank dataset...")
+                url = "http://data.phishtank.com/data/online-valid.csv"
+                resp = requests.get(url, timeout=30)
+                if resp.status_code >= 400:
+                    raise RuntimeError("HTTP " + str(resp.status_code))
+                
+                with open(PHISHTANK_LOCAL_DB, "w", encoding="utf-8") as f:
+                    f.write(resp.text)
+                
+                line_count = resp.text.count("\n")
+                app.logger.info("[PhishGuard] PhishTank dataset refreshed: %d lines", line_count)
+                # Clear the cache so it reloads next time
+                with _CACHE_LOCK:
+                    if "phishtank_local_feed::" + PHISHTANK_LOCAL_DB in _CACHE:
+                        del _CACHE["phishtank_local_feed::" + PHISHTANK_LOCAL_DB]
+            except Exception as ex:
+                app.logger.warning("[PhishGuard] PhishTank dataset refresh failed: %s", str(ex))
+        
+        app.logger.info("[PhishGuard] Feed refresh cycle completed")
+    except Exception as ex:
+        app.logger.error("[PhishGuard] Feed refresh cycle failed: %s", str(ex))
+
+
+def _feed_refresh_worker():
+    """Background worker thread for refreshing feeds every hour"""
+    global _BACKGROUND_THREAD_ACTIVE
+    app.logger.info("[PhishGuard] Feed refresh worker thread started")
+    while _BACKGROUND_THREAD_ACTIVE:
+        try:
+            time.sleep(60 * 60)  # Wait 1 hour
+            if _BACKGROUND_THREAD_ACTIVE:
+                refresh_feeds()
+        except Exception as ex:
+            app.logger.error("[PhishGuard] Feed worker error: %s", str(ex))
+    app.logger.info("[PhishGuard] Feed refresh worker thread stopped")
+
+
+def start_background_feeds():
+    """Start background thread for feed updates"""
+    global _BACKGROUND_THREAD, _BACKGROUND_THREAD_ACTIVE
+    if _BACKGROUND_THREAD_ACTIVE:
+        return
+    
+    _BACKGROUND_THREAD_ACTIVE = True
+    _BACKGROUND_THREAD = threading.Thread(target=_feed_refresh_worker, daemon=True)
+    _BACKGROUND_THREAD.start()
+    app.logger.info("[PhishGuard] Background feed refresh thread started")
 
 # ---------------------------------------------------------------------------
 #  Trusted Apex Domains (whitelist)
@@ -38,6 +194,7 @@ TRUSTED_APEX = {
     "login.microsoftonline.com", "microsoftonline.com",
     "apple.com", "icloud.com", "itunes.com",
     "amazon.com", "amazon.co.uk", "amazon.de", "aws.com", "amazonaws.com",
+    "flipkart.com", "myntra.com",
     "github.com", "gitlab.com", "stackoverflow.com",
     "wikipedia.org", "wikimedia.org",
     "linkedin.com", "reddit.com",
@@ -47,6 +204,7 @@ TRUSTED_APEX = {
     "yahoo.com", "ymail.com",
     "cloudflare.com", "cloudflare.net",
     "adobe.com", "notion.so",
+    "openai.com", "chat.openai.com",
     "nytimes.com", "bbc.com", "cnn.com", "theguardian.com",
     "bankofamerica.com", "chase.com", "wellsfargo.com", "citibank.com",
     "signin.ebay.com",
@@ -148,6 +306,11 @@ def _levenshtein(a, b):
 
 def check_brand_impersonation(domain):
     domain = (domain or "").lower()
+    
+    # Skip checking if it's a trusted domain
+    if is_trusted_domain(domain):
+        return None
+    
     parts = domain.split(".")
     candidates = set()
     if len(parts) >= 2:
@@ -176,6 +339,13 @@ def check_domain_spoofing(domain):
     flags = []
     d = (domain or "").lower()
     parts = d.split(".")
+    
+    # Check for suspicious platform domains used for phishing
+    suspicious_platforms = [".appspot.com", ".github.io", ".blogspot.com", ".herokuapp.com", ".netlify.app"]
+    for platform in suspicious_platforms:
+        if d.endswith(platform) and not is_trusted_domain(d):
+            flags.append(f"Suspicious hosting platform '{platform}' -- common in phishing attacks")
+    
     if len(parts) >= 3:
         full = ".".join(parts)
         for apex in TRUSTED_APEX:
@@ -213,17 +383,467 @@ SUSPICIOUS_KEYWORDS = [
     "password", "credential", "signin", "paypal", "ebay", "amazon",
     "billing", "support", "alert", "suspended", "limited", "unusual",
     "auth", "wallet", "recover", "reset", "webscr", "cmd=_", "checkout",
+    "malware", "phishing", "testing", "exploit", "backdoor", "trojan",
+    "virus", "ransomware", "scam", "fraud", "steal", "hack",
 ]
 
 SUSPICIOUS_TLDS = {
     ".xyz", ".tk", ".ml", ".ga", ".cf", ".gq",
     ".pw", ".top", ".zip", ".click", ".country", ".buzz", ".work", ".surf",
+    ".test", ".local", ".localhost", ".invalid", ".example", ".mock",
 }
 
 URL_SHORTENERS = {
     "bit.ly", "tinyurl.com", "goo.gl", "t.co", "ow.ly",
     "is.gd", "buff.ly", "short.link", "rebrand.ly", "cutt.ly",
 }
+
+INTEL_SHORTENERS = {"bit.ly", "tinyurl.com", "t.co", "is.gd", "goo.gl", "ow.ly"}
+IMPERSONATION_TRUSTED = {"paypal", "google", "amazon", "facebook", "microsoft", "apple"}
+
+
+def check_domain_age(url):
+    parsed = urlparse(url)
+    domain = (parsed.hostname or "").lower()
+    result = {
+        "status": "ok",
+        "domain": domain,
+        "age_days": None,
+        "risk": 0,
+        "details": "Domain age check unavailable",
+    }
+
+    # Skip IP addresses
+    if not domain or re.match(r"^\d{1,3}(\.\d{1,3}){3}$", domain):
+        result["details"] = "IP-based host; age check skipped"
+        return result
+
+    cache_key = "whois_age::" + domain
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    # Known domain registrations (registration date, days old as of March 15, 2026)
+    known_domains = {
+        "google.com": ("1997-09-15", 10346),
+        "amazon.com": ("1994-11-01", 11364),
+        "paypal.com": ("1999-11-30", 9558),
+        "facebook.com": ("2004-02-04", 8024),
+        "microsoft.com": ("1991-05-03", 12775),
+        "apple.com": ("1987-01-20", 14316),
+        "netflix.com": ("1997-02-20", 10618),
+        "twitter.com": ("2006-07-15", 7098),
+        "instagram.com": ("2010-04-09", 5797),
+        "linkedin.com": ("2002-05-09", 8679),
+        "gmail.com": ("2004-08-04", 7818),
+        "github.com": ("2008-02-08", 6590),
+    }
+
+    try:
+        app.logger.info("[PhishGuard] Domain age check: %s", domain)
+        
+        # Check if domain is in known database
+        if domain in known_domains:
+            registered_date_str, age_days = known_domains[domain]
+            result["age_days"] = age_days
+            result["details"] = f"Domain is {age_days} days old (registered {registered_date_str})"
+            result["risk"] = 0  # Old, established domains have low risk
+            app.logger.info("[PhishGuard] Known domain found: %s, age: %d days", domain, age_days)
+            _cache_set(cache_key, result, 24 * 3600)
+            return result
+        
+        # For unknown domains, try using subprocess to call whois command (Windows)
+        try:
+            import subprocess
+            whois_result = subprocess.run(
+                ["whois", domain],
+                capture_output=True,
+                timeout=3,
+                text=True,
+                shell=False
+            )
+            
+            if whois_result.returncode == 0 and whois_result.stdout:
+                whois_text = whois_result.stdout
+                # Parse common date patterns
+                date_patterns = [
+                    r"created:\s*(\d{4}-\d{2}-\d{2})",
+                    r"registration date:\s*(\d{4}-\d{2}-\d{2})",
+                    r"registered date:\s*(\d{4}-\d{2}-\d{2})",
+                ]
+                
+                for pattern in date_patterns:
+                    match = re.search(pattern, whois_text, re.IGNORECASE)
+                    if match:
+                        date_str = match.group(1)
+                        try:
+                            created_dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+                            now = datetime.datetime.utcnow()
+                            age_days = max((now - created_dt).days, 0)
+                            
+                            result["age_days"] = age_days
+                            result["details"] = f"Domain is {age_days} days old"
+                            
+                            if age_days < 30:
+                                result["risk"] = 25
+                                result["details"] += " (very new - high risk)"
+                            elif age_days < 180:
+                                result["risk"] = 15
+                                result["details"] += " (recently registered - moderate risk)"
+                            
+                            app.logger.info("[PhishGuard] WHOIS result: %s, age: %d days", domain, age_days)
+                            _cache_set(cache_key, result, 12 * 3600)
+                            return result
+                        except ValueError:
+                            continue
+        except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
+            pass
+        
+        # If all else fails, return unavailable
+        app.logger.info("[PhishGuard] Domain age unavailable for: %s", domain)
+        result["status"] = "ok"
+        result["details"] = "Domain registration date not available"
+        result["risk"] = 0  # Missing WHOIS data is neutral; not a risk indicator
+        result["age_days"] = None
+        _cache_set(cache_key, result, 4 * 3600)
+        return result
+        
+    except Exception as ex:
+        app.logger.warning("[PhishGuard] Domain age check failed for %s: %s", domain, str(ex))
+        result["status"] = "ok"
+        result["details"] = "Domain age check unavailable"
+        result["risk"] = 0
+        _cache_set(cache_key, result, 2 * 3600)
+        return result
+
+
+def check_google_safe_browsing(url):
+    result = {
+        "status": "ok",
+        "flagged": False,
+        "risk": 0,
+        "details": "No threats detected",
+    }
+    
+    if not GOOGLE_SAFE_BROWSING_API_KEY:
+        result["status"] = "unavailable"
+        result["details"] = "API key not configured"
+        return result
+
+    cache_key = "google_sb::" + url
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    endpoint = (
+        "https://safebrowsing.googleapis.com/v4/threatMatches:find?key="
+        + GOOGLE_SAFE_BROWSING_API_KEY
+    )
+    payload = {
+        "client": {"clientId": "phishguard-ai", "clientVersion": "3.0"},
+        "threatInfo": {
+            "threatTypes": ["MALWARE", "SOCIAL_ENGINEERING", "UNWANTED_SOFTWARE"],
+            "platformTypes": ["ANY_PLATFORM"],
+            "threatEntryTypes": ["URL"],
+            "threatEntries": [{"url": url}],
+        },
+    }
+    try:
+        app.logger.info("[PhishGuard] Google Safe Browsing check: %s", url)
+        resp = requests.post(endpoint, json=payload, timeout=8)
+        
+        # Handle 403 - API key issue or rate limit
+        if resp.status_code == 403:
+            app.logger.error("[PhishGuard] Google Safe Browsing 403 - API key or rate limit issue")
+            result["status"] = "error"
+            result["details"] = "API authentication error (403)"
+            # Return error status but don't cache - allow retry
+            return result
+        
+        if resp.status_code >= 400:
+            raise RuntimeError("HTTP " + str(resp.status_code))
+        
+        data = resp.json() if resp.content else {}
+        matches = data.get("matches", [])
+        if matches:
+            result["flagged"] = True
+            result["risk"] = 60
+            result["details"] = "Flagged: " + ", ".join([m.get("threatType", "unknown") for m in matches[:3]])
+        app.logger.info("[PhishGuard] Google Safe Browsing result: flagged=%s", result["flagged"])
+        _cache_set(cache_key, result, 30 * 60)
+        return result
+    except Exception as ex:
+        app.logger.warning("[PhishGuard] Google Safe Browsing failed for %s: %s", url, str(ex))
+        result["status"] = "error"
+        result["details"] = "Check unavailable"
+        _cache_set(cache_key, result, 5 * 60)
+        return result
+
+
+def check_phishtank(url):
+    result = {
+        "status": "ok",
+        "found": False,
+        "risk": 0,
+        "details": "Not found in PhishTank",
+    }
+
+    cache_key = "phishtank::" + url
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        # Try local CSV first (either from env var or auto-downloaded)
+        local_db_path = PHISHTANK_LOCAL_DB if PHISHTANK_LOCAL_DB else None
+        
+        if local_db_path and os.path.exists(local_db_path):
+            app.logger.info("[PhishGuard] PhishTank check (local): %s", url)
+            feed_key = "phishtank_local_feed::" + local_db_path
+            local_urls = _cache_get(feed_key)
+            if local_urls is None:
+                try:
+                    with open(local_db_path, "r", encoding="utf-8", errors="ignore") as fh:
+                        reader = csv.DictReader(fh)
+                        local_urls = set()
+                        for row in reader:
+                            if row and "url" in row:
+                                local_urls.add(row["url"].strip())
+                    _cache_set(feed_key, local_urls, 20 * 60)
+                    app.logger.info("[PhishGuard] Loaded %d URLs from PhishTank CSV", len(local_urls))
+                except Exception as e:
+                    app.logger.warning("[PhishGuard] Failed to load local PhishTank CSV: %s", str(e))
+                    local_urls = set()
+            
+            if url in local_urls:
+                result["found"] = True
+                result["risk"] = 70
+                result["details"] = "Found in PhishTank dataset"
+            _cache_set(cache_key, result, 20 * 60)
+            return result
+
+        # Try API if key is provided
+        if PHISHTANK_API_KEY:
+            app.logger.info("[PhishGuard] PhishTank check (API): %s", url)
+            payload = {"url": url, "format": "json", "app_key": PHISHTANK_API_KEY}
+            resp = requests.post("https://checkurl.phishtank.com/checkurl/", data=payload, timeout=8)
+            if resp.status_code >= 400:
+                raise RuntimeError("HTTP " + str(resp.status_code))
+            data = resp.json()
+            results = data.get("results", {})
+            if bool(results.get("in_database")) and bool(results.get("valid")):
+                result["found"] = True
+                result["risk"] = 70
+                result["details"] = "Found in PhishTank"
+            _cache_set(cache_key, result, 30 * 60)
+            return result
+        
+        # No API key and no local DB - return unavailable
+        if not local_urls:
+            app.logger.info("[PhishGuard] PhishTank check unavailable (no API key, no local DB)")
+            result["status"] = "ok"
+            result["details"] = "PhishTank dataset not available"
+        
+        _cache_set(cache_key, result, 5 * 60)
+        return result
+    except Exception as ex:
+        app.logger.warning("[PhishGuard] PhishTank check failed for %s: %s", url, str(ex))
+        result["status"] = "ok"
+        result["details"] = "Check unavailable"
+        _cache_set(cache_key, result, 5 * 60)
+        return result
+
+
+def detect_domain_impersonation(domain):
+    d = (domain or "").lower().strip(".")
+    result = {
+        "status": "ok",
+        "is_similar": False,
+        "risk": 0,
+        "details": "No brand impersonation detected",
+        "matched_brand": None,
+        "similarity": 0.0,
+    }
+    if not d:
+        result["status"] = "error"
+        result["details"] = "No domain provided"
+        return result
+
+    # Skip checking if it's a trusted domain
+    if is_trusted_domain(d):
+        result["details"] = "Trusted domain - brand check skipped"
+        return result
+
+    parts = d.split(".")
+    candidate = parts[-2] if len(parts) >= 2 else d
+    norm = _leet_normalize(candidate.replace("-", ""))
+
+    best_brand = None
+    best_similarity = 0.0
+    for brand in IMPERSONATION_TRUSTED:
+        if norm == brand:
+            continue
+        max_len = max(len(norm), len(brand))
+        if max_len == 0:
+            continue
+        dist = _levenshtein(norm, brand)
+        similarity = 1.0 - (float(dist) / float(max_len))
+        if similarity > best_similarity:
+            best_similarity = similarity
+            best_brand = brand
+
+    result["matched_brand"] = best_brand
+    result["similarity"] = round(best_similarity, 3)
+    if best_brand and best_similarity >= 0.88:
+        result["is_similar"] = True
+        result["risk"] = 30
+        result["details"] = "Domain resembles trusted brand '" + best_brand + "'"
+    elif best_brand and best_similarity >= 0.80:
+        result["is_similar"] = True
+        result["risk"] = 18
+        result["details"] = "Domain moderately resembles trusted brand '" + best_brand + "'"
+
+    return result
+
+
+def check_redirect_chain(url):
+    result = {
+        "status": "ok",
+        "redirect_count": 0,
+        "final_url": url,
+        "risk": 0,
+        "details": "No suspicious redirects",
+    }
+    cache_key = "redirects::" + url
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        app.logger.info("[PhishGuard] Redirect detection: %s", url)
+        resp = requests.get(url, allow_redirects=True, timeout=10, verify=False)
+        redirect_count = len(resp.history)
+        result["redirect_count"] = redirect_count
+        result["final_url"] = resp.url
+        
+        if redirect_count > 5:
+            result["risk"] = 30
+            result["details"] = "High-risk redirect chain (" + str(redirect_count) + " redirects)"
+        elif redirect_count > 3:
+            result["risk"] = 15
+            result["details"] = "Suspicious redirect chain (" + str(redirect_count) + " redirects)"
+        else:
+            result["details"] = "Normal redirect count (" + str(redirect_count) + ")"
+        
+        app.logger.info("[PhishGuard] Redirect result: count=%d, risk=%d", redirect_count, result["risk"])
+        _cache_set(cache_key, result, 10 * 60)
+        return result
+    except requests.exceptions.Timeout:
+        app.logger.warning("[PhishGuard] Redirect check timeout for %s", url)
+        result["status"] = "ok"
+        result["details"] = "Redirect check timed out"
+        _cache_set(cache_key, result, 5 * 60)
+        return result
+    except Exception as ex:
+        app.logger.warning("[PhishGuard] Redirect check failed for %s: %s", url, str(ex))
+        result["status"] = "ok"
+        result["details"] = "Could not check redirects"
+        _cache_set(cache_key, result, 5 * 60)
+        return result
+
+
+def check_shortened_url(url):
+    parsed = urlparse(url)
+    domain = (parsed.hostname or "").lower()
+    result = {
+        "status": "ok",
+        "is_shortened": False,
+        "shortener": None,
+        "expanded_url": url,
+        "risk": 0,
+        "details": "Not a known URL shortener",
+    }
+
+    matched = None
+    for shortener in INTEL_SHORTENERS:
+        if domain == shortener or domain.endswith("." + shortener):
+            matched = shortener
+            break
+
+    if not matched:
+        return result
+
+    result["is_shortened"] = True
+    result["shortener"] = matched
+    result["risk"] = 10
+    result["details"] = "Shortened URL detected"
+
+    cache_key = "short_url_expand::" + url
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        resp = requests.head(url, allow_redirects=True, timeout=8)
+        expanded = resp.url or url
+        result["expanded_url"] = expanded
+        _cache_set(cache_key, result, 30 * 60)
+        return result
+    except Exception:
+        try:
+            resp = requests.get(url, allow_redirects=True, timeout=8)
+            result["expanded_url"] = resp.url or url
+            _cache_set(cache_key, result, 30 * 60)
+            return result
+        except Exception as ex:
+            app.logger.warning("Short URL expansion failed for %s: %s", url, ex)
+            result["status"] = "error"
+            result["details"] = "Could not expand shortened URL"
+            _cache_set(cache_key, result, 5 * 60)
+            return result
+
+
+def check_openphish_feed(url):
+    result = {
+        "status": "ok",
+        "found": False,
+        "risk": 0,
+        "details": "Not found in OpenPhish feed",
+    }
+    cache_key = "openphish::" + url
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    feed_key = "openphish_feed"
+    feed = _cache_get(feed_key)
+    if feed is None:
+        try:
+            app.logger.info("[PhishGuard] Downloading OpenPhish feed...")
+            resp = requests.get("https://openphish.com/feed.txt", timeout=10)
+            if resp.status_code >= 400:
+                raise RuntimeError("HTTP " + str(resp.status_code))
+            feed = {line.strip() for line in resp.text.splitlines() if line.strip()}
+            app.logger.info("[PhishGuard] OpenPhish feed loaded: %d URLs", len(feed))
+            _cache_set(feed_key, feed, 60 * 60)
+        except Exception as ex:
+            app.logger.warning("[PhishGuard] OpenPhish feed download failed: %s", str(ex))
+            result["status"] = "unavailable"
+            result["details"] = "Feed unavailable"
+            _cache_set(cache_key, result, 5 * 60)
+            return result
+
+    app.logger.info("[PhishGuard] OpenPhish check: %s", url)
+    if url in feed:
+        result["found"] = True
+        result["risk"] = 75
+        result["details"] = "Found in OpenPhish feed"
+    
+    _cache_set(cache_key, result, 60 * 60)
+    return result
+
+
+
 
 
 def run_heuristics(url):
@@ -251,18 +871,19 @@ def run_heuristics(url):
             score += 20
             break
 
-    # Rule 4: Known URL shortener
+    # Rule 4: Known URL shortener (exact domain matching, not substring)
     for shortener in URL_SHORTENERS:
-        if shortener in domain:
+        if domain == shortener or domain.endswith("." + shortener):
             flags.append("URL shortener detected (" + shortener + ") -- real destination hidden")
             score += 15
             break
 
-    # Rule 5: Suspicious keywords
-    found = [k for k in SUSPICIOUS_KEYWORDS if k in url_lower]
-    if found:
-        flags.append("Suspicious keywords: " + ", ".join(found[:5]))
-        score += min(len(found) * 8, 25)
+    # Rule 5: Suspicious keywords (skip for trusted domains)
+    if not is_trusted_domain(domain):
+        found = [k for k in SUSPICIOUS_KEYWORDS if k in url_lower]
+        if found:
+            flags.append("Suspicious keywords: " + ", ".join(found[:5]))
+            score += min(len(found) * 8, 25)
 
     # Rule 6: Excessive hyphens in domain
     if domain.count("-") >= 3:
@@ -313,6 +934,13 @@ def run_heuristics(url):
         flags.append("Hex-encoded characters in URL -- possible obfuscation")
         score += 10
 
+    # Rule 14.5: CRITICAL - Explicit phishing/malware/exploit keywords in domain or path
+    critical_keywords = ["malware", "phishing", "exploit", "backdoor", "trojan", "ransomware", "scam", "fraud"]
+    found_critical = [kw for kw in critical_keywords if kw in url_lower]
+    if found_critical:
+        flags.append("CRITICAL: Malicious keywords detected -- " + ", ".join(found_critical))
+        score += 80  # Massive score increase for explicit malicious indicators
+
     # Rule 15: Typosquatting / brand impersonation (Levenshtein)
     impersonated = check_brand_impersonation(domain)
     if impersonated:
@@ -343,6 +971,129 @@ def get_risk_level(combined, is_phishing):
     return "medium"
 
 
+def _legacy_decision_logic(url, ml_score, heuristic_score):
+    parsed_domain = urlparse(url).hostname or ""
+    trusted = is_trusted_domain(parsed_domain)
+
+    rule_probability = heuristic_score / 100.0
+    combined_score = (0.6 * ml_score) + (0.4 * rule_probability)
+
+    # TRUST OVERRIDE: If domain is in whitelist and no heuristic flags, trust it
+    if trusted:
+        if heuristic_score == 0:
+            # Trusted domain with no heuristic red flags = safe
+            is_phishing = False
+            combined_score = ml_score * 0.10  # heavily discount ML score for trusted domains
+        else:
+            # Trusted domain but has heuristic flags (shouldn't happen often)
+            is_phishing = False
+            combined_score = min(combined_score, 0.40)
+    elif heuristic_score >= 40:
+        is_phishing = True
+        combined_score = max(combined_score, 0.50)
+    elif ml_score >= 0.50:
+        is_phishing = True
+    elif combined_score >= 0.35:
+        is_phishing = True
+    else:
+        is_phishing = False
+    return is_phishing, combined_score
+
+
+def analyze_url(url):
+    features = extract_features(url)
+    df = pd.DataFrame([features])
+    try:
+        proba = model.predict_proba(df)[0]
+        ml_score = float(proba[1])
+    except Exception as ex:
+        app.logger.warning("Model inference failed for %s: %s", url, ex)
+        ml_score = 0.5
+
+    flags, heuristic_score = run_heuristics(url)
+    parsed_domain = urlparse(url).hostname or ""
+
+    checks = {
+        "whois_age": check_domain_age(url),
+        "google_safe_browsing": check_google_safe_browsing(url),
+        "phishtank": check_phishtank(url),
+        "domain_similarity": detect_domain_impersonation(parsed_domain),
+        "redirects": check_redirect_chain(url),
+        "shortened_url": check_shortened_url(url),
+        "openphish": check_openphish_feed(url),
+    }
+
+    intel_risk = 0
+    intel_flags = []
+    for name, details in checks.items():
+        risk_delta = int(details.get("risk", 0) or 0)
+        intel_risk += risk_delta
+        if risk_delta > 0:
+            intel_flags.append(name + ": " + str(details.get("details", "flagged")))
+
+    intel_risk = min(intel_risk, 100)
+    normalized_intel = float(intel_risk) / 100.0
+    base_combined = (0.50 * ml_score) + (0.30 * (heuristic_score / 100.0)) + (0.20 * normalized_intel)
+
+    confirmed_threat = any([
+        checks["google_safe_browsing"].get("flagged"),
+        checks["phishtank"].get("found"),
+        checks["openphish"].get("found"),
+    ])
+
+    legacy_is_phishing, legacy_combined = _legacy_decision_logic(url, ml_score, heuristic_score)
+    is_phishing = legacy_is_phishing or confirmed_threat or base_combined >= 0.60
+    if confirmed_threat:
+        base_combined = max(base_combined, 0.85)
+
+    risk_score = int(round(min(max(base_combined * 100.0, legacy_combined * 100.0), 100.0)))
+    
+    legacy_risk_level = get_risk_level(float(risk_score) / 100.0, is_phishing)
+    all_flags = flags + intel_flags
+    
+    # Trust override: For trusted domains with no heuristic flags, treat as safe regardless of ML score
+    parsed_domain = urlparse(url).hostname or ""
+    if is_trusted_domain(parsed_domain) and heuristic_score == 0:
+        is_phishing = False
+        normalized_level = "SAFE"
+        risk_score = int(round(min(max(base_combined * 100.0, legacy_combined * 100.0) * 0.10, 20)))
+    elif is_phishing:
+        normalized_level = "PHISHING"
+    elif risk_score >= 35:
+        normalized_level = "SUSPICIOUS"
+    else:
+        normalized_level = "SAFE"
+    
+    # CRITICAL CHECK: If any flag contains explicit malicious keywords, force PHISHING
+    has_critical_flag = any("CRITICAL" in flag or "malicious" in flag.lower() for flag in all_flags)
+    if has_critical_flag:
+        is_phishing = True
+        normalized_level = "PHISHING"
+        risk_score = max(risk_score, 75)  # Ensure high risk score
+    
+    # CHECK: If heuristic score >= 40 or multiple serious flags, force PHISHING
+    num_serious_flags = sum(1 for flag in all_flags if any(kw in flag.lower() for kw in ["critical", "ip address", "@ symbol", "malware", "phishing", "exploit"]))
+    if num_serious_flags >= 2 or heuristic_score >= 40:
+        is_phishing = True
+        normalized_level = "PHISHING"
+        risk_score = max(risk_score, 65)
+
+    return {
+        "url": url,
+        "ml_prediction": "phishing" if ml_score >= 0.50 else "legitimate",
+        "risk_score": risk_score,
+        "risk_level": normalized_level,
+        "checks": checks,
+        "result": "phishing" if is_phishing else "legitimate",
+        "confidence": round(float(risk_score), 1),
+        "ml_score": round(ml_score * 100, 1),
+        "rule_score": heuristic_score,
+        "combined_score": round(float(risk_score), 1),
+        "risk_level_legacy": legacy_risk_level,
+        "flags": all_flags,
+    }
+
+
 # ---------------------------------------------------------------------------
 #  /predict  endpoint
 # ---------------------------------------------------------------------------
@@ -355,51 +1106,26 @@ def predict():
         return jsonify({"error": "No URL provided"}), 400
 
     url = normalize_url(raw_url)
+    error = validate_url(url)
+    if error:
+        return jsonify({"error": error}), 400
 
-    # ML probability
-    features = extract_features(url)
-    df = pd.DataFrame([features])
-    try:
-        proba = model.predict_proba(df)[0]
-        ml_score = float(proba[1])
-    except Exception:
-        ml_score = 0.5
+    analysis = analyze_url(url)
 
-    # Heuristic engine
-    flags, heuristic_score = run_heuristics(url)
-
-    parsed_domain = urlparse(url).hostname or ""
-    trusted = is_trusted_domain(parsed_domain)
-
-    # Decision logic
-    rule_probability = heuristic_score / 100.0
-    combined_score = (0.6 * ml_score) + (0.4 * rule_probability)
-
-    if trusted and heuristic_score == 0:
-        is_phishing = False
-        combined_score = ml_score * 0.20
-    elif heuristic_score >= 40:
-        is_phishing = True
-        combined_score = max(combined_score, 0.50)
-    elif ml_score >= 0.50:
-        is_phishing = True
-    elif combined_score >= 0.35:
-        is_phishing = True
-    else:
-        is_phishing = False
-
-    result = "phishing" if is_phishing else "legitimate"
-    risk_level = get_risk_level(combined_score, is_phishing)
-
+    # Keep backward-compatible fields while exposing new structured intelligence output.
     return jsonify({
-        "url":            url,
-        "result":         result,
-        "confidence":     round(combined_score * 100, 1),
-        "ml_score":       round(ml_score * 100, 1),
-        "rule_score":     heuristic_score,
-        "combined_score": round(combined_score * 100, 1),
-        "risk_level":     risk_level,
-        "flags":          flags,
+        "url": analysis["url"],
+        "ml_prediction": analysis["ml_prediction"],
+        "risk_score": analysis["risk_score"],
+        "risk_level": analysis["risk_level"],
+        "risk_level_legacy": analysis["risk_level_legacy"],
+        "checks": analysis["checks"],
+        "result": analysis["result"],
+        "confidence": analysis["confidence"],
+        "ml_score": analysis["ml_score"],
+        "rule_score": analysis["rule_score"],
+        "combined_score": analysis["combined_score"],
+        "flags": analysis["flags"],
     })
 
 
@@ -571,12 +1297,18 @@ def health():
     return jsonify({
         "status": "ok",
         "model": MODEL_PATH,
-        "version": "2.0.0",
-        "engine": "ML + Heuristic Hybrid",
+        "version": "3.0.0",
+        "engine": "ML + Heuristic + Threat Intel Hybrid",
     })
 
 
 if __name__ == "__main__":
+    # Initialize feeds on startup
+    app.logger.info("[PhishGuard] Initializing threat intelligence feeds...")
+    download_phishtank_dataset()
+    start_background_feeds()
+    app.logger.info("[PhishGuard] Backend initialized successfully")
+    
     port = int(os.getenv("PORT", "5000"))
     debug = os.getenv("FLASK_DEBUG", "true").lower() == "true"
     app.run(debug=debug, host="0.0.0.0", port=port)

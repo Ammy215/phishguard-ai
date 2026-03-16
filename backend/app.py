@@ -7,6 +7,7 @@ URL normalization, edge-case handling, and threat intelligence checks.
 
 import os
 import re
+import ssl
 import socket
 import datetime
 import logging
@@ -15,6 +16,7 @@ import time
 import io
 import csv
 from urllib.parse import urlparse, unquote
+from OpenSSL import crypto  # type: ignore[import]
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -23,11 +25,6 @@ import pandas as pd
 import requests
 from dotenv import load_dotenv
 load_dotenv()
-
-try:
-    import whois
-except ImportError:
-    whois = None
 
 # ---------------------------------------------------------------------------
 #  App Setup
@@ -311,6 +308,15 @@ def check_brand_impersonation(domain):
     if is_trusted_domain(domain):
         return None
     
+    # CRITICAL: Check if any brand keyword appears directly in the domain
+    # This catches impersonation like "amazon-security-alert.xyz"
+    for brand in KNOWN_BRANDS:
+        if brand in domain.split(".")[0]:  # Check in the main domain part
+            # Make sure it's not just a coincidence (brand name should be significant)
+            main_part = domain.split(".")[0]
+            if main_part.startswith(brand) or main_part.endswith(brand):
+                return brand
+    
     parts = domain.split(".")
     candidates = set()
     if len(parts) >= 2:
@@ -402,118 +408,131 @@ INTEL_SHORTENERS = {"bit.ly", "tinyurl.com", "t.co", "is.gd", "goo.gl", "ow.ly"}
 IMPERSONATION_TRUSTED = {"paypal", "google", "amazon", "facebook", "microsoft", "apple"}
 
 
-def check_domain_age(url):
+def check_ssl_certificate_age(url):
+    """
+    Check the age of SSL certificate for a domain.
+    Returns certificate age in days and associated risk.
+    
+    Risk scoring:
+    - < 2 days: 50 risk (highly suspicious)
+    - < 7 days: 25 risk (suspicious)
+    - < 30 days: 10 risk (somewhat suspicious)
+    - >= 30 days: 0 risk (normal)
+    """
     parsed = urlparse(url)
     domain = (parsed.hostname or "").lower()
+    
     result = {
-        "status": "ok",
+        "status": "unavailable",
         "domain": domain,
-        "age_days": None,
+        "certificate_age_days": None,
         "risk": 0,
-        "details": "Domain age check unavailable",
+        "details": "SSL certificate check unavailable",
     }
 
-    # Skip IP addresses
+    # Skip IP addresses - they don't have SSL certs with domain names
     if not domain or re.match(r"^\d{1,3}(\.\d{1,3}){3}$", domain):
-        result["details"] = "IP-based host; age check skipped"
+        result["details"] = "IP-based host; SSL check skipped"
         return result
 
-    cache_key = "whois_age::" + domain
+    # Skip non-HTTPS URLs
+    if parsed.scheme and parsed.scheme.lower() != "https":
+        result["details"] = "Non-HTTPS URL; SSL check skipped"
+        return result
+
+    cache_key = "ssl_cert::" + domain
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
 
-    # Known domain registrations (registration date, days old as of March 15, 2026)
-    known_domains = {
-        "google.com": ("1997-09-15", 10346),
-        "amazon.com": ("1994-11-01", 11364),
-        "paypal.com": ("1999-11-30", 9558),
-        "facebook.com": ("2004-02-04", 8024),
-        "microsoft.com": ("1991-05-03", 12775),
-        "apple.com": ("1987-01-20", 14316),
-        "netflix.com": ("1997-02-20", 10618),
-        "twitter.com": ("2006-07-15", 7098),
-        "instagram.com": ("2010-04-09", 5797),
-        "linkedin.com": ("2002-05-09", 8679),
-        "gmail.com": ("2004-08-04", 7818),
-        "github.com": ("2008-02-08", 6590),
-    }
-
     try:
-        app.logger.info("[PhishGuard] Domain age check: %s", domain)
+        app.logger.info("[PhishGuard] SSL certificate check: %s", domain)
         
-        # Check if domain is in known database
-        if domain in known_domains:
-            registered_date_str, age_days = known_domains[domain]
-            result["age_days"] = age_days
-            result["details"] = f"Domain is {age_days} days old (registered {registered_date_str})"
-            result["risk"] = 0  # Old, established domains have low risk
-            app.logger.info("[PhishGuard] Known domain found: %s, age: %d days", domain, age_days)
-            _cache_set(cache_key, result, 24 * 3600)
-            return result
+        # Create SSL context with certificate verification disabled
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
         
-        # For unknown domains, try using subprocess to call whois command (Windows)
-        try:
-            import subprocess
-            whois_result = subprocess.run(
-                ["whois", domain],
-                capture_output=True,
-                timeout=3,
-                text=True,
-                shell=False
-            )
-            
-            if whois_result.returncode == 0 and whois_result.stdout:
-                whois_text = whois_result.stdout
-                # Parse common date patterns
-                date_patterns = [
-                    r"created:\s*(\d{4}-\d{2}-\d{2})",
-                    r"registration date:\s*(\d{4}-\d{2}-\d{2})",
-                    r"registered date:\s*(\d{4}-\d{2}-\d{2})",
-                ]
+        # Connect to domain on port 443
+        with socket.create_connection((domain, 443), timeout=5) as sock:
+            with context.wrap_socket(sock, server_hostname=domain) as ssock:
+                # Get certificate
+                der_cert = ssock.getpeercert(binary_form=True)
                 
-                for pattern in date_patterns:
-                    match = re.search(pattern, whois_text, re.IGNORECASE)
-                    if match:
-                        date_str = match.group(1)
-                        try:
-                            created_dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
-                            now = datetime.datetime.utcnow()
-                            age_days = max((now - created_dt).days, 0)
-                            
-                            result["age_days"] = age_days
-                            result["details"] = f"Domain is {age_days} days old"
-                            
-                            if age_days < 30:
-                                result["risk"] = 25
-                                result["details"] += " (very new - high risk)"
-                            elif age_days < 180:
-                                result["risk"] = 15
-                                result["details"] += " (recently registered - moderate risk)"
-                            
-                            app.logger.info("[PhishGuard] WHOIS result: %s, age: %d days", domain, age_days)
-                            _cache_set(cache_key, result, 12 * 3600)
-                            return result
-                        except ValueError:
-                            continue
-        except (FileNotFoundError, subprocess.TimeoutExpired, Exception):
-            pass
-        
-        # If all else fails, return unavailable
-        app.logger.info("[PhishGuard] Domain age unavailable for: %s", domain)
-        result["status"] = "ok"
-        result["details"] = "Domain registration date not available"
-        result["risk"] = 0  # Missing WHOIS data is neutral; not a risk indicator
-        result["age_days"] = None
-        _cache_set(cache_key, result, 4 * 3600)
-        return result
-        
-    except Exception as ex:
-        app.logger.warning("[PhishGuard] Domain age check failed for %s: %s", domain, str(ex))
-        result["status"] = "ok"
-        result["details"] = "Domain age check unavailable"
+                if not der_cert:
+                    result["status"] = "unavailable"
+                    result["details"] = "No SSL certificate found"
+                    _cache_set(cache_key, result, 2 * 3600)
+                    return result
+                
+                # Parse certificate with OpenSSL
+                x509 = crypto.load_certificate(crypto.FILETYPE_ASN1, der_cert)
+                
+                # Extract notBefore date
+                not_before_str = x509.get_notBefore().decode('utf-8')
+                # Format: YYYYMMDDhhmmssZ (example: 20240315120000Z)
+                cert_issue_date = datetime.datetime.strptime(not_before_str, "%Y%m%d%H%M%SZ")
+                
+                # Calculate certificate age
+                now = datetime.datetime.utcnow()
+                cert_age_days = max((now - cert_issue_date).days, 0)
+                
+                result["status"] = "ok"
+                result["certificate_age_days"] = cert_age_days
+                
+                # Assign risk based on certificate age
+                if cert_age_days < 2:
+                    result["risk"] = 50
+                    result["details"] = f"SSL certificate issued {cert_age_days} days ago (highly suspicious - very new)"
+                elif cert_age_days < 7:
+                    result["risk"] = 25
+                    result["details"] = f"SSL certificate issued {cert_age_days} days ago (suspicious - recently issued)"
+                elif cert_age_days < 30:
+                    result["risk"] = 10
+                    result["details"] = f"SSL certificate issued {cert_age_days} days ago (somewhat suspicious - new)"
+                else:
+                    result["risk"] = 0
+                    result["details"] = f"SSL certificate issued {cert_age_days} days ago (normal age)"
+                
+                app.logger.info(
+                    "[PhishGuard] SSL certificate age for %s: %d days, risk: %d",
+                    domain, cert_age_days, result["risk"]
+                )
+                
+                # Cache for 24 hours
+                _cache_set(cache_key, result, 24 * 3600)
+                return result
+    
+    except socket.timeout:
+        app.logger.warning("[PhishGuard] SSL check timeout for %s", domain)
+        result["status"] = "unavailable"
+        result["details"] = "SSL check timed out"
         result["risk"] = 0
-        _cache_set(cache_key, result, 2 * 3600)
+        _cache_set(cache_key, result, 1 * 3600)
+        return result
+    
+    except socket.gaierror:
+        app.logger.warning("[PhishGuard] Domain resolution failed for %s", domain)
+        result["status"] = "unavailable"
+        result["details"] = "Domain could not be resolved"
+        result["risk"] = 0
+        _cache_set(cache_key, result, 1 * 3600)
+        return result
+    
+    except ssl.SSLError as ex:
+        app.logger.warning("[PhishGuard] SSL error for %s: %s", domain, str(ex))
+        result["status"] = "unavailable"
+        result["details"] = "SSL error occurred"
+        result["risk"] = 0
+        _cache_set(cache_key, result, 1 * 3600)
+        return result
+    
+    except Exception as ex:
+        app.logger.warning("[PhishGuard] SSL certificate check failed for %s: %s", domain, str(ex))
+        result["status"] = "unavailable"
+        result["details"] = "SSL certificate check unavailable"
+        result["risk"] = 0
+        _cache_set(cache_key, result, 30 * 60)
         return result
 
 
@@ -556,8 +575,11 @@ def check_google_safe_browsing(url):
         if resp.status_code == 403:
             app.logger.error("[PhishGuard] Google Safe Browsing 403 - API key or rate limit issue")
             result["status"] = "error"
-            result["details"] = "API authentication error (403)"
-            # Return error status but don't cache - allow retry
+            result["details"] = "API authentication error (403) - check not available"
+            # API is broken, don't penalize - just mark as unavailable
+            result["risk"] = 0  # Don't add risk when API is broken
+            result["flagged"] = False
+            _cache_set(cache_key, result, 5 * 60)
             return result
         
         if resp.status_code >= 400:
@@ -1014,7 +1036,7 @@ def analyze_url(url):
     parsed_domain = urlparse(url).hostname or ""
 
     checks = {
-        "whois_age": check_domain_age(url),
+        "ssl_certificate_age": check_ssl_certificate_age(url),
         "google_safe_browsing": check_google_safe_browsing(url),
         "phishtank": check_phishtank(url),
         "domain_similarity": detect_domain_impersonation(parsed_domain),

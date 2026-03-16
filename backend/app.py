@@ -61,7 +61,6 @@ ADMIN_PASSWORD = "phishguard123"
 MODEL_PATH = os.getenv("MODEL_PATH", "phish_model.joblib")
 model = joblib.load(MODEL_PATH)
 
-GOOGLE_SAFE_BROWSING_API_KEY = os.getenv("GOOGLE_SAFE_BROWSING_API_KEY", "").strip()
 PHISHTANK_API_KEY = os.getenv("PHISHTANK_API_KEY", "").strip()
 PHISHTANK_LOCAL_DB = os.getenv("PHISHTANK_LOCAL_DB", "phishtank.csv").strip()
 
@@ -443,71 +442,6 @@ def check_ssl_certificate_age(url):
     }
     return result
 
-
-def check_google_safe_browsing(url):
-    result = {
-        "status": "ok",
-        "flagged": False,
-        "risk": 0,
-        "details": "No threats detected",
-    }
-    
-    if not GOOGLE_SAFE_BROWSING_API_KEY:
-        result["status"] = "unavailable"
-        result["details"] = "API key not configured"
-        return result
-
-    cache_key = "google_sb::" + url
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        return cached
-
-    endpoint = (
-        "https://safebrowsing.googleapis.com/v4/threatMatches:find?key="
-        + GOOGLE_SAFE_BROWSING_API_KEY
-    )
-    payload = {
-        "client": {"clientId": "phishguard-ai", "clientVersion": "3.0"},
-        "threatInfo": {
-            "threatTypes": ["MALWARE", "SOCIAL_ENGINEERING", "UNWANTED_SOFTWARE"],
-            "platformTypes": ["ANY_PLATFORM"],
-            "threatEntryTypes": ["URL"],
-            "threatEntries": [{"url": url}],
-        },
-    }
-    try:
-        app.logger.info("[PhishGuard] Google Safe Browsing check: %s", url)
-        resp = requests.post(endpoint, json=payload, timeout=8)
-        
-        # Handle 403 - API key issue or rate limit
-        if resp.status_code == 403:
-            app.logger.error("[PhishGuard] Google Safe Browsing 403 - API key or rate limit issue")
-            result["status"] = "error"
-            result["details"] = "API authentication error (403) - check not available"
-            # API is broken, don't penalize - just mark as unavailable
-            result["risk"] = 0  # Don't add risk when API is broken
-            result["flagged"] = False
-            _cache_set(cache_key, result, 5 * 60)
-            return result
-        
-        if resp.status_code >= 400:
-            raise RuntimeError("HTTP " + str(resp.status_code))
-        
-        data = resp.json() if resp.content else {}
-        matches = data.get("matches", [])
-        if matches:
-            result["flagged"] = True
-            result["risk"] = 60
-            result["details"] = "Flagged: " + ", ".join([m.get("threatType", "unknown") for m in matches[:3]])
-        app.logger.info("[PhishGuard] Google Safe Browsing result: flagged=%s", result["flagged"])
-        _cache_set(cache_key, result, 30 * 60)
-        return result
-    except Exception as ex:
-        app.logger.warning("[PhishGuard] Google Safe Browsing failed for %s: %s", url, str(ex))
-        result["status"] = "error"
-        result["details"] = "Check unavailable"
-        _cache_set(cache_key, result, 5 * 60)
-        return result
 
 
 def check_phishtank(url):
@@ -945,7 +879,6 @@ def analyze_url(url):
 
     checks = {
         "ssl_certificate_age": check_ssl_certificate_age(url),
-        "google_safe_browsing": check_google_safe_browsing(url),
         "phishtank": check_phishtank(url),
         "domain_similarity": detect_domain_impersonation(parsed_domain),
         "redirects": check_redirect_chain(url),
@@ -966,7 +899,6 @@ def analyze_url(url):
     base_combined = (0.50 * ml_score) + (0.30 * (heuristic_score / 100.0)) + (0.20 * normalized_intel)
 
     confirmed_threat = any([
-        checks["google_safe_browsing"].get("flagged"),
         checks["phishtank"].get("found"),
         checks["openphish"].get("found"),
     ])

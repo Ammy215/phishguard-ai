@@ -364,29 +364,6 @@ const Scanner = () => {
                   </div>
                 )}
 
-                {/* Google Safe Browsing */}
-                {result.checks.google_safe_browsing && (
-                  <div
-                    className="rounded-lg p-3.5"
-                    style={{
-                      background: "#0f172a",
-                      border: `1px solid ${result.checks.google_safe_browsing.flagged ? "rgba(239,68,68,0.15)" : "rgba(148,163,184,0.06)"}`,
-                    }}
-                  >
-                    <div className="text-[11px] font-bold mb-2" style={{ color: "#94a3b8" }}>
-                      Google Safe Browsing
-                    </div>
-                    <div className="text-sm font-semibold" style={{
-                      color: result.checks.google_safe_browsing.flagged ? "#f87171" : "#34d399"
-                    }}>
-                      {result.checks.google_safe_browsing.flagged ? "⚠️ Flagged" : "✓ Safe"}
-                    </div>
-                    <div className="text-xs mt-1" style={{ color: "#64748b" }}>
-                      {result.checks.google_safe_browsing.details}
-                    </div>
-                  </div>
-                )}
-
                 {/* PhishTank */}
                 {result.checks.phishtank && (
                   <div

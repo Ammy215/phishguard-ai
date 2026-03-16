@@ -7,7 +7,6 @@ URL normalization, edge-case handling, and threat intelligence checks.
 
 import os
 import re
-import ssl
 import socket
 import datetime
 import logging
@@ -16,9 +15,10 @@ import time
 import io
 import csv
 from urllib.parse import urlparse, unquote
-from OpenSSL import crypto  # type: ignore[import]
+import secrets
+from functools import wraps
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, session, redirect, url_for
 from flask_cors import CORS
 import joblib
 import pandas as pd
@@ -26,12 +26,37 @@ import requests
 from dotenv import load_dotenv
 load_dotenv()
 
+# Import database module
+from database import (
+    initialize_database, log_scan_result, track_user, is_user_banned,
+    get_stats, get_recent_scans, get_users, get_banned_users,
+    ban_user, unban_user, get_detection_stats
+)
+
 # ---------------------------------------------------------------------------
 #  App Setup
 # ---------------------------------------------------------------------------
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": os.getenv("CORS_ORIGINS", "*")}})
+CORS(
+    app,
+    resources={r"/*": {
+        "origins": [
+            "http://localhost:5173",
+            "http://localhost:5174",
+            "http://127.0.0.1:5173",
+            "http://127.0.0.1:5174",
+        ],
+        "supports_credentials": True,
+        "allow_headers": ["Content-Type"],
+        "methods": ["GET", "POST", "OPTIONS"]
+    }}
+)
 app.logger.setLevel(logging.INFO)
+app.secret_key = os.getenv("SECRET_KEY", secrets.token_hex(32))
+
+# Admin credentials
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "phishguard123"
 
 MODEL_PATH = os.getenv("MODEL_PATH", "phish_model.joblib")
 model = joblib.load(MODEL_PATH)
@@ -409,131 +434,14 @@ IMPERSONATION_TRUSTED = {"paypal", "google", "amazon", "facebook", "microsoft", 
 
 
 def check_ssl_certificate_age(url):
-    """
-    Check the age of SSL certificate for a domain.
-    Returns certificate age in days and associated risk.
-    
-    Risk scoring:
-    - < 2 days: 50 risk (highly suspicious)
-    - < 7 days: 25 risk (suspicious)
-    - < 30 days: 10 risk (somewhat suspicious)
-    - >= 30 days: 0 risk (normal)
-    """
-    parsed = urlparse(url)
-    domain = (parsed.hostname or "").lower()
-    
+    """SSL certificate age detection - DISABLED"""
     result = {
         "status": "unavailable",
-        "domain": domain,
         "certificate_age_days": None,
         "risk": 0,
-        "details": "SSL certificate check unavailable",
+        "details": "SSL certificate age detection disabled",
     }
-
-    # Skip IP addresses - they don't have SSL certs with domain names
-    if not domain or re.match(r"^\d{1,3}(\.\d{1,3}){3}$", domain):
-        result["details"] = "IP-based host; SSL check skipped"
-        return result
-
-    # Skip non-HTTPS URLs
-    if parsed.scheme and parsed.scheme.lower() != "https":
-        result["details"] = "Non-HTTPS URL; SSL check skipped"
-        return result
-
-    cache_key = "ssl_cert::" + domain
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        return cached
-
-    try:
-        app.logger.info("[PhishGuard] SSL certificate check: %s", domain)
-        
-        # Create SSL context with certificate verification disabled
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        
-        # Connect to domain on port 443
-        with socket.create_connection((domain, 443), timeout=5) as sock:
-            with context.wrap_socket(sock, server_hostname=domain) as ssock:
-                # Get certificate
-                der_cert = ssock.getpeercert(binary_form=True)
-                
-                if not der_cert:
-                    result["status"] = "unavailable"
-                    result["details"] = "No SSL certificate found"
-                    _cache_set(cache_key, result, 2 * 3600)
-                    return result
-                
-                # Parse certificate with OpenSSL
-                x509 = crypto.load_certificate(crypto.FILETYPE_ASN1, der_cert)
-                
-                # Extract notBefore date
-                not_before_str = x509.get_notBefore().decode('utf-8')
-                # Format: YYYYMMDDhhmmssZ (example: 20240315120000Z)
-                cert_issue_date = datetime.datetime.strptime(not_before_str, "%Y%m%d%H%M%SZ")
-                
-                # Calculate certificate age
-                now = datetime.datetime.utcnow()
-                cert_age_days = max((now - cert_issue_date).days, 0)
-                
-                result["status"] = "ok"
-                result["certificate_age_days"] = cert_age_days
-                
-                # Assign risk based on certificate age
-                if cert_age_days < 2:
-                    result["risk"] = 50
-                    result["details"] = f"SSL certificate issued {cert_age_days} days ago (highly suspicious - very new)"
-                elif cert_age_days < 7:
-                    result["risk"] = 25
-                    result["details"] = f"SSL certificate issued {cert_age_days} days ago (suspicious - recently issued)"
-                elif cert_age_days < 30:
-                    result["risk"] = 10
-                    result["details"] = f"SSL certificate issued {cert_age_days} days ago (somewhat suspicious - new)"
-                else:
-                    result["risk"] = 0
-                    result["details"] = f"SSL certificate issued {cert_age_days} days ago (normal age)"
-                
-                app.logger.info(
-                    "[PhishGuard] SSL certificate age for %s: %d days, risk: %d",
-                    domain, cert_age_days, result["risk"]
-                )
-                
-                # Cache for 24 hours
-                _cache_set(cache_key, result, 24 * 3600)
-                return result
-    
-    except socket.timeout:
-        app.logger.warning("[PhishGuard] SSL check timeout for %s", domain)
-        result["status"] = "unavailable"
-        result["details"] = "SSL check timed out"
-        result["risk"] = 0
-        _cache_set(cache_key, result, 1 * 3600)
-        return result
-    
-    except socket.gaierror:
-        app.logger.warning("[PhishGuard] Domain resolution failed for %s", domain)
-        result["status"] = "unavailable"
-        result["details"] = "Domain could not be resolved"
-        result["risk"] = 0
-        _cache_set(cache_key, result, 1 * 3600)
-        return result
-    
-    except ssl.SSLError as ex:
-        app.logger.warning("[PhishGuard] SSL error for %s: %s", domain, str(ex))
-        result["status"] = "unavailable"
-        result["details"] = "SSL error occurred"
-        result["risk"] = 0
-        _cache_set(cache_key, result, 1 * 3600)
-        return result
-    
-    except Exception as ex:
-        app.logger.warning("[PhishGuard] SSL certificate check failed for %s: %s", domain, str(ex))
-        result["status"] = "unavailable"
-        result["details"] = "SSL certificate check unavailable"
-        result["risk"] = 0
-        _cache_set(cache_key, result, 30 * 60)
-        return result
+    return result
 
 
 def check_google_safe_browsing(url):
@@ -1123,9 +1031,20 @@ def analyze_url(url):
 def predict():
     data = request.get_json(silent=True) or {}
     raw_url = data.get("url", "").strip()
+    user_id = data.get("user_id", f"user_{request.remote_addr}").strip()
 
     if not raw_url:
         return jsonify({"error": "No URL provided"}), 400
+
+    # Check if user is banned
+    if is_user_banned(user_id):
+        return jsonify({"error": "User is banned", "status": "blocked"}), 403
+
+    # Track user activity
+    try:
+        track_user(user_id, request.remote_addr)
+    except Exception as e:
+        app.logger.error(f"Error tracking user: {str(e)}")
 
     url = normalize_url(raw_url)
     error = validate_url(url)
@@ -1133,6 +1052,21 @@ def predict():
         return jsonify({"error": error}), 400
 
     analysis = analyze_url(url)
+
+    # Log scan result to database
+    try:
+        # Normalize result: "phishing" -> "Phishing", "legitimate" -> "Safe"
+        result_normalized = "Phishing" if analysis["result"].lower() == "phishing" else "Safe"
+        log_scan_result(
+            url=analysis["url"],
+            risk_score=analysis["risk_score"],
+            result=result_normalized,
+            source="extension",
+            user_id=user_id,
+            ip_address=request.remote_addr
+        )
+    except Exception as e:
+        app.logger.error(f"Error logging scan: {str(e)}")
 
     # Keep backward-compatible fields while exposing new structured intelligence output.
     return jsonify({
@@ -1324,7 +1258,155 @@ def health():
     })
 
 
+# Admin authentication decorator
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'admin_logged_in' not in session:
+            return jsonify({"error": "Unauthorized"}), 401
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+# ---------------------------------------------------------------------------
+#  Admin Authentication Endpoints
+# ---------------------------------------------------------------------------
+@app.route("/admin", methods=["GET", "POST"])
+def admin_login():
+    """Admin login endpoint."""
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        username = data.get("username", "")
+        password = data.get("password", "")
+        
+        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+            session['admin_logged_in'] = True
+            return jsonify({"success": True, "message": "Login successful"})
+        else:
+            return jsonify({"success": False, "message": "Invalid credentials"}), 401
+    
+    # GET request
+    if 'admin_logged_in' in session:
+        return jsonify({"status": "already_logged_in"})
+    
+    return jsonify({"status": "login_page"})
+
+
+@app.route("/admin/logout", methods=["POST"])
+def admin_logout():
+    """Admin logout endpoint."""
+    session.clear()
+    return jsonify({"success": True, "message": "Logged out successfully"})
+
+
+# ---------------------------------------------------------------------------
+#  Admin API Endpoints
+# ---------------------------------------------------------------------------
+@app.route("/admin/stats", methods=["GET"])
+@admin_required
+def admin_stats():
+    """Get system statistics."""
+    try:
+        stats = get_stats()
+        return jsonify(stats)
+    except Exception as e:
+        app.logger.error(f"Error fetching stats: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/admin/recent-scans", methods=["GET"])
+@admin_required
+def admin_recent_scans():
+    """Get recent scan results."""
+    try:
+        limit = request.args.get("limit", 50, type=int)
+        scans = get_recent_scans(limit=limit)
+        return jsonify({"scans": scans, "count": len(scans)})
+    except Exception as e:
+        app.logger.error(f"Error fetching recent scans: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/admin/users", methods=["GET"])
+@admin_required
+def admin_users():
+    """Get all users."""
+    try:
+        limit = request.args.get("limit", 100, type=int)
+        users = get_users(limit=limit)
+        return jsonify({"users": users, "count": len(users)})
+    except Exception as e:
+        app.logger.error(f"Error fetching users: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/admin/banned-users", methods=["GET"])
+@admin_required
+def admin_banned_users():
+    """Get banned users."""
+    try:
+        limit = request.args.get("limit", 100, type=int)
+        banned = get_banned_users(limit=limit)
+        return jsonify({"banned_users": banned, "count": len(banned)})
+    except Exception as e:
+        app.logger.error(f"Error fetching banned users: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/admin/ban-user", methods=["POST"])
+@admin_required
+def admin_ban_user():
+    """Ban a user."""
+    try:
+        data = request.get_json(silent=True) or {}
+        user_id = data.get("user_id", "")
+        reason = data.get("reason", "Admin action")
+        
+        if not user_id:
+            return jsonify({"error": "user_id required"}), 400
+        
+        ban_user(user_id, reason)
+        return jsonify({"success": True, "message": f"User {user_id} banned"})
+    except Exception as e:
+        app.logger.error(f"Error banning user: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/admin/unban-user", methods=["POST"])
+@admin_required
+def admin_unban_user():
+    """Unban a user."""
+    try:
+        data = request.get_json(silent=True) or {}
+        user_id = data.get("user_id", "")
+        
+        if not user_id:
+            return jsonify({"error": "user_id required"}), 400
+        
+        unban_user(user_id)
+        return jsonify({"success": True, "message": f"User {user_id} unbanned"})
+    except Exception as e:
+        app.logger.error(f"Error unbanning user: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/admin/detection-stats", methods=["GET"])
+@admin_required
+def admin_detection_stats():
+    """Get detection statistics for charts."""
+    try:
+        stats = get_detection_stats()
+        return jsonify({"stats": stats})
+    except Exception as e:
+        app.logger.error(f"Error fetching detection stats: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
+    # Initialize database
+    app.logger.info("[PhishGuard] Initializing database...")
+    initialize_database()
+    
     # Initialize feeds on startup
     app.logger.info("[PhishGuard] Initializing threat intelligence feeds...")
     download_phishtank_dataset()

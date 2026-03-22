@@ -1,0 +1,38 @@
+﻿============================================================
+DATABASE: phishguard.db
+============================================================
+
+ TABLE: scan_results
+------------------------------------------------------------
+  Columns: [('id', 'INTEGER'), ('url', 'TEXT'), ('risk_score', 'REAL'), ('result', 'TEXT'), ('scan_time', 'TIMESTAMP'), ('source', 'TEXT'), ('user_id', 'TEXT'), ('ip_address', 'TEXT')]
+  Row count: 220
+  Last 5 rows:
+    {'id': 220, 'url': 'https://www.amazon.com/gp/ubp/oneButton/config/redirectHome?tagbase=aceredge-ubpl&ref=aa-gateway-edgebookmark', 'risk_score': 6.0, 'result': 'Safe', 'scan_time': '2026-03-22 13:38:43', 'source': 'extension', 'user_id': 'user_127.0.0.1', 'ip_address': '127.0.0.1'}
+    {'id': 219, 'url': 'https://www.amazon.com/gp/ubp/oneButton/config/redirectHome?tagbase=aceredge-ubpl&ref=aa-gateway-edgebookmark', 'risk_score': 6.0, 'result': 'Safe', 'scan_time': '2026-03-22 13:38:37', 'source': 'extension', 'user_id': 'user_127.0.0.1', 'ip_address': '127.0.0.1'}
+    {'id': 218, 'url': 'https://www.boat-lifestyle.com/products/131-iron-man', 'risk_score': 2.0, 'result': 'Safe', 'scan_time': '2026-03-22 13:37:14', 'source': 'extension', 'user_id': 'user_127.0.0.1', 'ip_address': '127.0.0.1'}
+    {'id': 217, 'url': 'https://chatgpt.com/g/g-p-696689f3a21c81918c8005ffdb682fc7-homework/c/69b6bf02-a100-8323-9938-5b9db8d5023e', 'risk_score': 4.0, 'result': 'Safe', 'scan_time': '2026-03-22 12:29:26', 'source': 'extension', 'user_id': 'user_127.0.0.1', 'ip_address': '127.0.0.1'}
+    {'id': 216, 'url': 'https://chatgpt.com/g/g-p-696689f3a21c81918c8005ffdb682fc7-homework/project', 'risk_score': 0.0, 'result': 'Safe', 'scan_time': '2026-03-22 12:29:23', 'source': 'extension', 'user_id': 'user_127.0.0.1', 'ip_address': '127.0.0.1'}
+
+ TABLE: sqlite_sequence
+------------------------------------------------------------
+  Columns: [('name', ''), ('seq', '')]
+  Row count: 2
+  Last 2 rows:
+    {'name': 'banned_users', 'seq': 2}
+    {'name': 'scan_results', 'seq': 220}
+
+ TABLE: users
+------------------------------------------------------------
+  Columns: [('user_id', 'TEXT'), ('ip_address', 'TEXT'), ('request_count', 'INTEGER'), ('status', 'TEXT'), ('first_seen', 'TIMESTAMP'), ('last_seen', 'TIMESTAMP')]
+  Row count: 2
+  Last 2 rows:
+    {'user_id': 'user_127.0.0.1', 'ip_address': '127.0.0.1', 'request_count': 229, 'status': 'active', 'first_seen': '2026-03-16 08:06:54', 'last_seen': '2026-03-22 13:38:43'}
+    {'user_id': 'user_192.168.1.1', 'ip_address': '192.168.1.1', 'request_count': 1, 'status': 'active', 'first_seen': '2026-03-16 08:06:54', 'last_seen': '2026-03-16 08:06:54'}
+
+ TABLE: banned_users
+------------------------------------------------------------
+  Columns: [('id', 'INTEGER'), ('user_id', 'TEXT'), ('ip_address', 'TEXT'), ('ban_time', 'TIMESTAMP'), ('reason', 'TEXT')]
+  Row count: 0
+  (empty table)
+
+============================================================

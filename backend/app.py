@@ -246,8 +246,8 @@ def is_trusted_domain(domain):
 _URL_RE = re.compile(
     r'^https?://'
     r'(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)*'
-    r'(?:[A-Z]{2,63}|XN--[A-Z0-9]{1,59})'
-    r'(?::\d{2,5})?'
+    r'(?:[A-Z]{2,63}|XN--[A-Z0-9]{1,59}|localhost)'
+    r'(?::\d{1,5})?'
     r'(?:/[^\s]*)?$',
     re.IGNORECASE
 )
@@ -707,6 +707,179 @@ def check_openphish_feed(url):
     return result
 
 
+def check_domain_resolution(url):
+    parsed = urlparse(url)
+    domain = (parsed.hostname or "").strip().lower()
+    result = {
+        "status": "ok",
+        "resolved": True,
+        "risk": 0,
+        "details": "Domain resolves normally",
+        "ip_count": 0,
+    }
+
+    if not domain:
+        result["status"] = "error"
+        result["resolved"] = False
+        result["risk"] = 40
+        result["details"] = "No domain to resolve"
+        return result
+
+    # Raw IPv4 hosts bypass DNS and are already handled by other heuristics.
+    if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", domain):
+        result["details"] = "Raw IP host provided (DNS not required)"
+        return result
+
+    cache_key = "dns_resolution::" + domain
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        addr_info = socket.getaddrinfo(domain, None)
+        unique_ips = {item[4][0] for item in addr_info if item and len(item) > 4 and item[4]}
+        result["ip_count"] = len(unique_ips)
+        if not unique_ips:
+            result["resolved"] = False
+            result["risk"] = 60
+            result["details"] = "Domain has no usable DNS records"
+            _cache_set(cache_key, result, 10 * 60)
+            return result
+
+        result["details"] = "Domain resolves to " + str(len(unique_ips)) + " IP address(es)"
+        _cache_set(cache_key, result, 30 * 60)
+        return result
+    except socket.gaierror as ex:
+        code = getattr(ex, "errno", None)
+        result["resolved"] = False
+        if code in (socket.EAI_NONAME, socket.EAI_NODATA):
+            result["risk"] = 70
+            result["details"] = "Domain does not resolve (NXDOMAIN/no DNS record)"
+        elif code == socket.EAI_AGAIN:
+            result["risk"] = 35
+            result["details"] = "Temporary DNS failure during lookup"
+        else:
+            result["risk"] = 55
+            result["details"] = "DNS lookup failed"
+        _cache_set(cache_key, result, 10 * 60)
+        return result
+    except Exception as ex:
+        app.logger.warning("[PhishGuard] DNS resolution check failed for %s: %s", domain, str(ex))
+        result["resolved"] = False
+        result["risk"] = 45
+        result["details"] = "DNS resolution check failed"
+        _cache_set(cache_key, result, 5 * 60)
+        return result
+
+
+def check_illegal_blocked_sites(url):
+    """Check against known illegal, copyright-infringing, or commonly blocked domains"""
+    parsed = urlparse(url)
+    domain = (parsed.hostname or "").strip().lower()
+    
+    result = {
+        "status": "ok",
+        "is_blocked": False,
+        "risk": 0,
+        "details": "Not in blocked list",
+        "reason": None,
+    }
+    
+    if not domain:
+        return result
+
+    # Skip trusted domains
+    if is_trusted_domain(domain):
+        result["details"] = "Trusted domain - blocklist check skipped"
+        return result
+
+    # Known illegal/blocked sites database
+    # Includes: file-sharing (piracy), torrent, malware distribution, phishing platforms
+    BLOCKED_DOMAINS = {
+        # File-sharing / Piracy platforms (India-blocked, global known malicious)
+        "exoshare.com", "exoshare.co", "exoshare.net",
+        "indishare.com", "indishare.net", "indishare.io",
+        "alfafile.net", "alfafile.org", "alfafile.co",
+        "nitroflare.com", "nitroflare.net", "nitroflare.io",
+        "uploadrocket.net", "uploadrocket.org", "uploadrocket.io",
+        "loadus.net", "loadus.io", "loadus.org",
+        "uploading.site", "uploading.org", "uploading.net",
+        "depositfiles.com", "datafilehost.com", "dailyuploads.net",
+        
+        # Torrent sites
+        "thepiratebay.org", "thepiratebay.com", "thepiratebay.vip",
+        "torrentdownload.com", "torrentdownload.net",
+        "torcache.net", "torrar.com",
+        "kickasstorrents.com", "kickass.to",
+        "zoink.it", "torlock.com",
+        "rarbg.to", "rarbg.com",
+        "1337x.to", "1337x.am",
+        "eztv.io", "eztv.ag",
+        "yify-torrent.com", "yts.lt",
+        
+        # Malware / Exploit distributions
+        "exploitdb.com", "exploit.jp",
+        
+        # Known phishing / spam platforms (platforms often abused)
+        "free-logins.com", "free-password.com",
+        "account-verify.net", "verify-account.net",
+        "confirm-identity.com", "validate-account.com",
+        
+        # Additional commonly blocked in India and other regions
+        "bigfile.to", "bigfile.ws",
+        "novafile.com", "novafile.net",
+        "extratorrents.cc", "extratorrent.cc",
+        "demonoid.pw", "demonoid.io",
+        "isohunt.com", "isohunt.to",
+        "torrentcreeper.com",
+        "fileserve.com", "filesonic.com",
+        "fshare.vn", "tusfiles.net",
+    }
+    
+    BLOCKED_KEYWORDS = [
+        "rapidshare", "megaupload", "hotfile", "mediafire", "uploaded.net",
+        "torrent", "pirate", "warez", "crack", "keygen", "serial", "license",
+        "movie-downloads", "download-free", "free-movies", "free-tv",
+    ]
+    
+    cache_key = "blocked_sites::" + domain
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+    
+    # Exact domain match
+    if domain in BLOCKED_DOMAINS:
+        result["is_blocked"] = True
+        result["risk"] = 80
+        result["details"] = "Domain is on illegal/blocked sites list"
+        result["reason"] = "Known piracy, file-sharing, or malware distribution platform"
+        _cache_set(cache_key, result, 60 * 60)
+        return result
+    
+    # Subdomain match (e.g., sub.exoshare.com)
+    for blocked in BLOCKED_DOMAINS:
+        if domain.endswith("." + blocked):
+            result["is_blocked"] = True
+            result["risk"] = 80
+            result["details"] = "Subdomain of blocked domain: " + blocked
+            result["reason"] = "Known piracy or malware distribution platform"
+            _cache_set(cache_key, result, 60 * 60)
+            return result
+    
+    # Keyword-based detection for common patterns
+    domain_lower = domain.lower()
+    for keyword in BLOCKED_KEYWORDS:
+        if keyword in domain_lower:
+            result["is_blocked"] = True
+            result["risk"] = 65
+            result["details"] = "Domain matches illegal/suspicious keyword: " + keyword
+            result["reason"] = "Pattern matches known piracy/malware distribution"
+            _cache_set(cache_key, result, 60 * 60)
+            return result
+    
+    _cache_set(cache_key, result, 60 * 60)
+    return result
+
 
 
 
@@ -879,6 +1052,8 @@ def analyze_url(url):
 
     checks = {
         "ssl_certificate_age": check_ssl_certificate_age(url),
+        "domain_resolution": check_domain_resolution(url),
+        "illegal_blocked_sites": check_illegal_blocked_sites(url),
         "phishtank": check_phishtank(url),
         "domain_similarity": detect_domain_impersonation(parsed_domain),
         "redirects": check_redirect_chain(url),
@@ -902,6 +1077,9 @@ def analyze_url(url):
         checks["phishtank"].get("found"),
         checks["openphish"].get("found"),
     ])
+
+    dns_unresolved = not bool(checks["domain_resolution"].get("resolved", True))
+    dns_risk = int(checks["domain_resolution"].get("risk", 0) or 0)
 
     legacy_is_phishing, legacy_combined = _legacy_decision_logic(url, ml_score, heuristic_score)
     is_phishing = legacy_is_phishing or confirmed_threat or base_combined >= 0.60
@@ -939,6 +1117,29 @@ def analyze_url(url):
         is_phishing = True
         normalized_level = "PHISHING"
         risk_score = max(risk_score, 65)
+
+    # DNS override: unresolved NXDOMAIN-like domains are high risk for untrusted targets.
+    if dns_unresolved and dns_risk >= 60 and not is_trusted_domain(parsed_domain):
+        is_phishing = True
+        normalized_level = "PHISHING"
+        risk_score = max(risk_score, 70)
+        dns_detail = checks["domain_resolution"].get("details", "Domain resolution failure")
+        dns_flag = "Domain resolution risk: " + str(dns_detail)
+        if dns_flag not in all_flags:
+            all_flags.append(dns_flag)
+
+    # BLOCKLIST override: Known illegal/banned sites are always flagged as phishing
+    is_blocked = checks.get("illegal_blocked_sites", {}).get("is_blocked", False)
+    blocked_risk = int(checks.get("illegal_blocked_sites", {}).get("risk", 0) or 0)
+    if is_blocked and blocked_risk >= 65:
+        is_phishing = True
+        normalized_level = "PHISHING"
+        risk_score = max(risk_score, 78)
+        blocked_detail = checks["illegal_blocked_sites"].get("details", "Domain on blocklist")
+        blocked_reason = checks["illegal_blocked_sites"].get("reason", "Illegal/banned site")
+        blocked_flag = f"Blocklist match: {blocked_detail} -- {blocked_reason}"
+        if blocked_flag not in all_flags:
+            all_flags.append(blocked_flag)
 
     return {
         "url": url,

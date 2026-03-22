@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PhishGuard DB Viewer</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', sans-serif;
+    background: #0d1117;
+    color: #e6edf3;
+    min-height: 100vh;
+  }
+
+  .topbar {
+    background: linear-gradient(135deg, #1a2332, #0d1117);
+    border-bottom: 1px solid #21262d;
+    padding: 16px 32px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    backdrop-filter: blur(12px);
+  }
+
+  .topbar .logo {
+    font-size: 22px;
+    font-weight: 700;
+    background: linear-gradient(135deg, #58a6ff, #bc8cff);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    letter-spacing: -0.5px;
+  }
+
+  .topbar .db-name {
+    background: #21262d;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 5px 14px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    color: #8b949e;
+  }
+
+  .layout {
+    display: flex;
+    min-height: calc(100vh - 61px);
+  }
+
+  .sidebar {
+    width: 220px;
+    background: #161b22;
+    border-right: 1px solid #21262d;
+    padding: 20px 0;
+    position: sticky;
+    top: 61px;
+    height: calc(100vh - 61px);
+    overflow-y: auto;
+    flex-shrink: 0;
+  }
+
+  .sidebar-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: #8b949e;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 0 20px 12px;
+  }
+
+  .nav-link {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 20px;
+    color: #c9d1d9;
+    text-decoration: none;
+    font-size: 13.5px;
+    font-weight: 500;
+    transition: all 0.15s;
+    border-left: 2px solid transparent;
+  }
+
+  .nav-link:hover {
+    background: #21262d;
+    color: #58a6ff;
+    border-left-color: #58a6ff;
+  }
+
+  .nav-link::before {
+    content: '▸';
+    font-size: 10px;
+    color: #58a6ff;
+    opacity: 0.6;
+  }
+
+  .main {
+    flex: 1;
+    padding: 32px;
+    overflow: auto;
+  }
+
+  .table-section {
+    margin-bottom: 40px;
+    background: #161b22;
+    border: 1px solid #21262d;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  .table-header {
+    padding: 16px 24px;
+    background: linear-gradient(135deg, #1c2230, #161b22);
+    border-bottom: 1px solid #21262d;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .table-icon { font-size: 18px; }
+
+  .table-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 16px;
+    font-weight: 600;
+    color: #58a6ff;
+  }
+
+  .row-badge {
+    background: #1f6feb33;
+    border: 1px solid #1f6feb66;
+    color: #58a6ff;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    margin-left: auto;
+  }
+
+  .table-wrapper {
+    overflow-x: auto;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  thead tr {
+    background: #0d1117;
+  }
+
+  thead th {
+    padding: 12px 16px;
+    text-align: left;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: #8b949e;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    border-bottom: 1px solid #21262d;
+    white-space: nowrap;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  tbody tr {
+    border-bottom: 1px solid #21262d;
+    transition: background 0.1s;
+  }
+
+  tbody tr:last-child { border-bottom: none; }
+
+  tbody tr:hover { background: #1c2230; }
+
+  tbody td {
+    padding: 11px 16px;
+    color: #e6edf3;
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px;
+  }
+
+  .null {
+    color: #484f58;
+    font-style: italic;
+    font-family: 'Inter', sans-serif;
+  }
+
+  .empty {
+    text-align: center;
+    padding: 40px;
+    color: #484f58;
+    font-style: italic;
+    font-family: 'Inter', sans-serif;
+  }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="logo">⚡ PhishGuard</div>
+  <div class="db-name">phishguard.db</div>
+</div>
+<div class="layout">
+  <nav class="sidebar">
+    <div class="sidebar-title">Tables</div>
+    <a href="#table-banned_users" class="nav-link">banned_users</a><a href="#table-scan_results" class="nav-link">scan_results</a><a href="#table-sqlite_sequence" class="nav-link">sqlite_sequence</a><a href="#table-users" class="nav-link">users</a>
+  </nav>
+  <main class="main">
+    
+    <div class="table-section" id="table-banned_users">
+        <div class="table-header">
+            <span class="table-icon">🗂</span>
+            <span class="table-name">banned_users</span>
+            <span class="row-badge">0 rows</span>
+        </div>
+        <div class="table-wrapper">
+            <table>
+                <thead><tr><th>id</th><th>user_id</th><th>ip_address</th><th>ban_time</th><th>reason</th></tr></thead>
+                <tbody><tr><td colspan="5" class="empty">— No records —</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+    
+    <div class="table-section" id="table-scan_results">
+        <div class="table-header">
+            <span class="table-icon">🗂</span>
+            <span class="table-name">scan_results</span>
+            <span class="row-badge">220 rows</span>
+        </div>
+        <div class="table-wrapper">
+            <table>
+                <thead><tr><th>id</th><th>url</th><th>risk_score</th><th>result</th><th>scan_time</th><th>source</th><th>user_id</th><th>ip_address</th></tr></thead>
+                <tbody><tr><td>220</td><td>https://www.amazon.com/gp/ubp/oneButton/config/redirectHome?tagbase=aceredge-ubpl&ref=aa-gateway-edgebookmark</td><td>6.0</td><td>Safe</td><td>2026-03-22 13:38:43</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>219</td><td>https://www.amazon.com/gp/ubp/oneButton/config/redirectHome?tagbase=aceredge-ubpl&ref=aa-gateway-edgebookmark</td><td>6.0</td><td>Safe</td><td>2026-03-22 13:38:37</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>218</td><td>https://www.boat-lifestyle.com/products/131-iron-man</td><td>2.0</td><td>Safe</td><td>2026-03-22 13:37:14</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>217</td><td>https://chatgpt.com/g/g-p-696689f3a21c81918c8005ffdb682fc7-homework/c/69b6bf02-a100-8323-9938-5b9db8d5023e</td><td>4.0</td><td>Safe</td><td>2026-03-22 12:29:26</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>216</td><td>https://chatgpt.com/g/g-p-696689f3a21c81918c8005ffdb682fc7-homework/project</td><td>0.0</td><td>Safe</td><td>2026-03-22 12:29:23</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>215</td><td>https://chatgpt.com/</td><td>1.0</td><td>Safe</td><td>2026-03-22 12:29:16</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>214</td><td>https://chatgpt.com/</td><td>1.0</td><td>Safe</td><td>2026-03-22 12:29:16</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>213</td><td>https://www.online-convert.com/result#j=d1b454d0-59e6-480f-b628-89b51dfc9fa0</td><td>4.0</td><td>Safe</td><td>2026-03-22 12:27:57</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>212</td><td>https://document.online-convert.com/convert/word-to-doc</td><td>9.0</td><td>Safe</td><td>2026-03-22 12:27:31</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>211</td><td>https://www.google.com/search?q=word+file+to+google+docs+converter+free&oq=word+file+to+google+doc&gs_lcrp=EgZjaHJvbWUqBwgCEAAYgAQyBwgAEAAYgAQyBggBEEUYOTIHCAIQABiABDIHCAMQABiABDIICAQQABgWGB4yCAgFEAAYFhgeMggIBhAAGBYYHjIICAcQABgWGB4yCAgIEAAYFhgeMggICRAAGBYYHtIBCjEyMDEwajBqMTWoAgiwAgHxBTrRVEgStlCB8QU60VRIErZQgQ&sourceid=chrome&ie=UTF-8</td><td>6.0</td><td>Safe</td><td>2026-03-22 12:27:18</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>210</td><td>https://web.whatsapp.com/</td><td>3.0</td><td>Safe</td><td>2026-03-22 12:26:33</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>209</td><td>https://web.whatsapp.com/</td><td>3.0</td><td>Safe</td><td>2026-03-22 12:26:23</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>208</td><td>https://web.whatsapp.com/</td><td>3.0</td><td>Safe</td><td>2026-03-22 12:20:34</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>207</td><td>https://web.whatsapp.com/</td><td>3.0</td><td>Safe</td><td>2026-03-22 12:20:10</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>206</td><td>https://web.whatsapp.com/</td><td>3.0</td><td>Safe</td><td>2026-03-22 12:16:18</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>205</td><td>https://web.whatsapp.com/</td><td>3.0</td><td>Safe</td><td>2026-03-22 12:13:54</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>204</td><td>https://chromewebstore.google.com/category/extensions?utm_source=ext_sidebar&hl=en-US</td><td>2.0</td><td>Safe</td><td>2026-03-22 12:11:38</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>203</td><td>https://chromewebstore.google.com/category/extensions?utm_source=ext_sidebar&hl=en-US</td><td>2.0</td><td>Safe</td><td>2026-03-22 12:11:23</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>202</td><td>https://www.netflix.com/in/</td><td>2.0</td><td>Safe</td><td>2026-03-22 12:11:13</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>201</td><td>https://www.netflix.com/in/</td><td>2.0</td><td>Safe</td><td>2026-03-22 12:11:12</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>200</td><td>https://www.netflix.com/in/</td><td>2.0</td><td>Safe</td><td>2026-03-22 12:11:08</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>199</td><td>https://channel3now.com/</td><td>70.0</td><td>Phishing</td><td>2026-03-22 11:59:11</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>198</td><td>https://example.com/search?q=test#results</td><td>0.0</td><td>Safe</td><td>2026-03-22 11:59:11</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>197</td><td>https://exoshare.com/</td><td>78.0</td><td>Phishing</td><td>2026-03-22 11:59:11</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>196</td><td>https://google.com/</td><td>0.0</td><td>Safe</td><td>2026-03-22 11:59:09</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>195</td><td>https://its52.com/</td><td>1.0</td><td>Safe</td><td>2026-03-22 11:54:06</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>194</td><td>https://www.its52.com/</td><td>48.0</td><td>Phishing</td><td>2026-03-22 11:53:50</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>193</td><td>https://www.its52.com/</td><td>48.0</td><td>Phishing</td><td>2026-03-22 11:53:34</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>192</td><td>https://www.its52.com/</td><td>48.0</td><td>Phishing</td><td>2026-03-22 11:53:28</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>191</td><td>https://www.google.com/search?q=aniwave&oq=&gs_lcrp=EgZjaHJvbWUqCQgGECMYJxjqAjIJCAAQIxgnGOoCMgkIARAjGCcY6gIyCQgCECMYJxjqAjIJCAMQIxgnGOoCMgkIBBAjGCcY6gIyCQgFECMYJxjqAjIJCAYQIxgnGOoCMgkIBxAjGCcY6gLSAQk0MTc4ajBqMTWoAgiwAgHxBWQPPPdjrli0&sourceid=chrome&ie=UTF-8</td><td>6.0</td><td>Safe</td><td>2026-03-22 11:53:14</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>190</td><td>https://www.google.com/search?q=aniwave&oq=&gs_lcrp=EgZjaHJvbWUqCQgGECMYJxjqAjIJCAAQIxgnGOoCMgkIARAjGCcY6gIyCQgCECMYJxjqAjIJCAMQIxgnGOoCMgkIBBAjGCcY6gIyCQgFECMYJxjqAjIJCAYQIxgnGOoCMgkIBxAjGCcY6gLSAQk0MTc4ajBqMTWoAgiwAgHxBWQPPPdjrli0&sourceid=chrome&ie=UTF-8</td><td>6.0</td><td>Safe</td><td>2026-03-22 11:53:10</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>189</td><td>https://chromewebstore.google.com/category/extensions?utm_source=ext_sidebar&hl=en-US</td><td>2.0</td><td>Safe</td><td>2026-03-22 11:52:05</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>188</td><td>https://chromewebstore.google.com/category/extensions?utm_source=ext_sidebar&hl=en-US</td><td>2.0</td><td>Safe</td><td>2026-03-22 11:51:54</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>187</td><td>https://chromewebstore.google.com/category/extensions?utm_source=ext_sidebar&hl=en-US</td><td>2.0</td><td>Safe</td><td>2026-03-22 11:51:33</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>186</td><td>https://example.com</td><td>1.0</td><td>Safe</td><td>2026-03-22 11:33:58</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>185</td><td>https://chromewebstore.google.com/detail/phishguard-ai-phishing-de/bgmpigmggkapcphapehhjfmghfcdeloh?hl=en-US&utm_source=ext_sidebar</td><td>75.0</td><td>Phishing</td><td>2026-03-22 11:25:02</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>184</td><td>https://chromewebstore.google.com/search/phishguard?hl=en-US&utm_source=ext_sidebar</td><td>2.0</td><td>Safe</td><td>2026-03-22 11:24:42</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>183</td><td>https://chromewebstore.google.com/category/extensions?utm_source=ext_sidebar&hl=en-US&pli=1</td><td>2.0</td><td>Safe</td><td>2026-03-22 11:24:31</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>182</td><td>http://rarbg.to/?tr_uuid=20260322-2221-0270-9d78-822ff7a44396&fp=c41b152d425cc3d9ac854ec021237ebb&cheq=2cfc3116df47bb5f543d6ca258d0081c</td><td>78.0</td><td>Phishing</td><td>2026-03-22 11:21:14</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>181</td><td>https://claude.ai/new</td><td>1.0</td><td>Safe</td><td>2026-03-22 11:20:53</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>180</td><td>https://rarbg.to/</td><td>78.0</td><td>Phishing</td><td>2026-03-22 11:10:59</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>179</td><td>https://claude.ai/new</td><td>1.0</td><td>Safe</td><td>2026-03-22 11:10:43</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>178</td><td>https://claude.ai/new</td><td>1.0</td><td>Safe</td><td>2026-03-22 11:07:43</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>177</td><td>https://claude.ai/login</td><td>4.0</td><td>Safe</td><td>2026-03-22 11:07:35</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>176</td><td>https://www.google.com/search?q=claude+ai&oq=claude+ai&gs_lcrp=EgZjaHJvbWUyDggAEEUYJxg5GIAEGIoFMg0IARAAGIMBGLEDGIAEMg0IAhAAGIMBGLEDGIAEMg0IAxAAGIMBGLEDGIAEMg0IBBAAGIMBGLEDGIAEMhAIBRAAGIMBGLEDGIAEGIoFMg0IBhAAGIMBGLEDGIAEMgoIBxAAGLEDGIAEMg0ICBAAGIMBGLEDGIAE0gEJNDY3NGowajE1qAIMsAIB8QVbnTuquhOkdw&sourceid=chrome&ie=UTF-8</td><td>6.0</td><td>Safe</td><td>2026-03-22 11:07:34</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>175</td><td>http://exoshare.com/</td><td>4.0</td><td>Safe</td><td>2026-03-22 10:58:12</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>174</td><td>http://exoshare.com/</td><td>4.0</td><td>Safe</td><td>2026-03-22 10:57:58</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>173</td><td>https://pastebin.com/PvFpppZg</td><td>0.0</td><td>Safe</td><td>2026-03-22 10:57:38</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>172</td><td>https://www.reddit.com/r/india/comments/4u60a9/list_of_blocked_websites_in_india/</td><td>4.0</td><td>Safe</td><td>2026-03-22 10:57:01</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>171</td><td>https://www.reddit.com/r/india/comments/4u60a9/list_of_blocked_websites_in_india/</td><td>4.0</td><td>Safe</td><td>2026-03-22 10:57:00</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>170</td><td>https://indianexpress.com/article/technology/social/government-wants-32-urls-including-dailymotion-vimeo-banned-in-india/</td><td>4.0</td><td>Safe</td><td>2026-03-22 10:56:49</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>169</td><td>http://www.bigfile.to/</td><td>4.0</td><td>Safe</td><td>2026-03-22 10:56:10</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>168</td><td>http://www.bigfile.to</td><td>4.0</td><td>Safe</td><td>2026-03-22 10:55:53</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>167</td><td>http://www.indishare.com</td><td>4.0</td><td>Safe</td><td>2026-03-22 10:55:22</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>166</td><td>https://pastebin.com/PvFpppZg</td><td>0.0</td><td>Safe</td><td>2026-03-22 10:55:03</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>165</td><td>https://www.reddit.com/r/india/comments/4u60a9/list_of_blocked_websites_in_india/</td><td>4.0</td><td>Safe</td><td>2026-03-22 10:54:36</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>164</td><td>https://www.google.com/search?q=real+life+banned+websited+and+illegal+urls&oq=real+life+banned+websited+and+illegal+urls&gs_lcrp=EgZjaHJvbWUyBggAEEUYOTIJCAEQIRgKGKABMgkIAhAhGAoYoAEyBwgDECEYjwLSAQoxNTEzN2owajE1qAIMsAIB8QUyzcX8aZc1uPEFMs3F_GmXNbg&sourceid=chrome&ie=UTF-8</td><td>6.0</td><td>Safe</td><td>2026-03-22 10:54:30</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>163</td><td>https://www.google.com/search?q=real+life+banned+websited+and+illegal+urls&oq=real+life+banned+websited+and+illegal+urls&gs_lcrp=EgZjaHJvbWUyBggAEEUYOTIJCAEQIRgKGKABMgkIAhAhGAoYoAEyBwgDECEYjwLSAQoxNTEzN2owajE1qAIMsAIB8QUyzcX8aZc1uPEFMs3F_GmXNbg&sourceid=chrome&ie=UTF-8</td><td>6.0</td><td>Safe</td><td>2026-03-22 10:54:28</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>162</td><td>https://cyble.com/knowledge-hub/top-10-dark-web-search-engines/</td><td>0.0</td><td>Safe</td><td>2026-03-22 10:54:05</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>161</td><td>https://www.google.com/search?q=real+life+banned+websited+and+illegal+urls&oq=real+life+banned+websited+and+illegal+urls&gs_lcrp=EgZjaHJvbWUyBggAEEUYOTIJCAEQIRgKGKABMgkIAhAhGAoYoAEyBwgDECEYjwLSAQoxNTEzN2owajE1qAIMsAIB8QUyzcX8aZc1uPEFMs3F_GmXNbg&sourceid=chrome&ie=UTF-8</td><td>6.0</td><td>Safe</td><td>2026-03-22 10:54:00</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>160</td><td>http://malware.testing.google.test/testing/malware/</td><td>75.0</td><td>Phishing</td><td>2026-03-22 10:53:21</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>159</td><td>https://chatgpt.com/g/g-p-696689f3a21c81918c8005ffdb682fc7-homework/c/69b6bf02-a100-8323-9938-5b9db8d5023e</td><td>4.0</td><td>Safe</td><td>2026-03-22 10:49:56</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>158</td><td>https://chatgpt.com/g/g-p-696689f3a21c81918c8005ffdb682fc7-homework/project</td><td>0.0</td><td>Safe</td><td>2026-03-22 10:49:51</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>157</td><td>https://chatgpt.com/</td><td>1.0</td><td>Safe</td><td>2026-03-22 10:49:40</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>156</td><td>https://chatgpt.com/</td><td>1.0</td><td>Safe</td><td>2026-03-22 10:49:40</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>155</td><td>https://www.google.com/search?q=websites+like+these+banned+illegal+with+url+to+test&oq=websites+like+these+banned+illegal+with+url+to+test&gs_lcrp=EgZjaHJvbWUyBggAEEUYOTIHCAEQIRigATIHCAIQIRigATIHCAMQIRiPAtIBCjIzMDIyajBqMTWoAgCwAgA&sourceid=chrome&ie=UTF-8</td><td>6.0</td><td>Safe</td><td>2026-03-22 10:49:32</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>154</td><td>https://channel3now.com/</td><td>70.0</td><td>Phishing</td><td>2026-03-22 10:48:19</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>153</td><td>http://channel3now.com/</td><td>4.0</td><td>Safe</td><td>2026-03-22 09:24:21</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>152</td><td>http://channel3now.com/</td><td>4.0</td><td>Safe</td><td>2026-03-22 09:24:20</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>151</td><td>https://channel3now.com/</td><td>1.0</td><td>Safe</td><td>2026-03-22 09:24:13</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>150</td><td>http://channel3now.com/</td><td>4.0</td><td>Safe</td><td>2026-03-22 09:23:58</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>149</td><td>http://channel3now.com/</td><td>4.0</td><td>Safe</td><td>2026-03-22 09:23:34</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>148</td><td>https://en.wikipedia.org/wiki/Category:Defunct_Pakistani_websites</td><td>0.0</td><td>Safe</td><td>2026-03-22 09:23:15</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>147</td><td>https://en.wikipedia.org/wiki/Channel3Now</td><td>0.0</td><td>Safe</td><td>2026-03-22 09:23:12</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>146</td><td>https://en.wikipedia.org/wiki/Category:Defunct_Pakistani_websites</td><td>0.0</td><td>Safe</td><td>2026-03-22 09:23:09</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>145</td><td>https://en.wikipedia.org/wiki/Category:Defunct_websites_by_country</td><td>0.0</td><td>Safe</td><td>2026-03-22 09:22:55</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>144</td><td>https://en.wikipedia.org/wiki/Category:Defunct_websites</td><td>0.0</td><td>Safe</td><td>2026-03-22 09:22:22</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>143</td><td>https://khoros.com/</td><td>1.0</td><td>Safe</td><td>2026-03-22 09:22:18</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>142</td><td>https://en.wikipedia.org/wiki/Klout</td><td>0.0</td><td>Safe</td><td>2026-03-22 09:22:03</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>141</td><td>https://aniwaves.ru/</td><td>4.0</td><td>Safe</td><td>2026-03-22 09:21:53</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>140</td><td>https://www.google.com/search?q=Aniwave&oq=Aniwave&gs_lcrp=EgZjaHJvbWUyBggAEEUYOTIHCAEQABiPAtIBCDI1NTRqMGo3qAIIsAIB8QVPDlAsuurwxg&sourceid=chrome&ie=UTF-8</td><td>6.0</td><td>Safe</td><td>2026-03-22 09:21:51</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>139</td><td>https://en.wikipedia.org/wiki/Category:Defunct_websites</td><td>0.0</td><td>Safe</td><td>2026-03-22 09:21:39</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>138</td><td>https://en.wikipedia.org/wiki/ABCnews.com.co</td><td>0.0</td><td>Safe</td><td>2026-03-22 09:21:35</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>137</td><td>https://en.wikipedia.org/wiki/Category:Defunct_websites</td><td>0.0</td><td>Safe</td><td>2026-03-22 09:21:28</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>136</td><td>https://www.google.com/search?q=some+very+illegal+websites+that+are+almost+banned+or+not+used+anymore+provide+it+with+url&sca_esv=7f1d20af605b697f&sxsrf=ANbL-n6p4MbRm3ZdnAoDVd0Htx3pVfOkUg:1774170894144&ei=DrO_abSrCPmxwcsPg57iuQs&biw=1707&bih=772&ved=0ahUKEwi06qnPlbOTAxX5WHADHQOPOLcQ4dUDCBE&uact=5&oq=some+very+illegal+websites+that+are+almost+banned+or+not+used+anymore+provide+it+with+url&gs_lp=Egxnd3Mtd2l6LXNlcnAiWXNvbWUgdmVyeSBpbGxlZ2FsIHdlYnNpdGVzIHRoYXQgYXJlIGFsbW9zdCBiYW5uZWQgb3Igbm90IHVzZWQgYW55bW9yZSBwcm92aWRlIGl0IHdpdGggdXJsSPwyUKEHWIQtcAF4AZABAJgB2QKgAawmqgEGMi0xOS4xuAEDyAEA-AEBmAIBoAIVwgIKEAAYsAMY1gQYR5gDAIgGAZAGCJIHATGgB4gTsgcAuAcAwgcDMy0xyAcSgAgA&sclient=gws-wiz-serp</td><td>6.0</td><td>Safe</td><td>2026-03-22 09:21:21</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>135</td><td>https://crackstation.net</td><td>1.0</td><td>Safe</td><td>2026-03-22 09:20:53</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>134</td><td>https://www.mp3juices.cc</td><td>50.0</td><td>Phishing</td><td>2026-03-22 09:20:02</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>133</td><td>https://libgen.is</td><td>1.0</td><td>Safe</td><td>2026-03-22 09:19:09</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>132</td><td>https://medium.com/@MrResolve1/10-illegal-websites-that-are-100-free-and-dangerously-underrated-83aa3651aedb</td><td>14.0</td><td>Safe</td><td>2026-03-22 09:18:40</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>131</td><td>https://zoro.tv/</td><td>0.0</td><td>Safe</td><td>2026-03-22 09:18:24</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>130</td><td>https://zoro.tv/</td><td>0.0</td><td>Safe</td><td>2026-03-22 09:18:15</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>129</td><td>https://rapidshare.com</td><td>1.0</td><td>Safe</td><td>2026-03-22 09:17:37</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>128</td><td>https://megaupload.com</td><td>1.0</td><td>Safe</td><td>2026-03-22 09:17:04</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>127</td><td>https://www.google.com/search?q=some+very+illegal+websites+that+are+almost+banned+or+not+used+anymore+provide+it+with+url&sca_esv=7f1d20af605b697f&sxsrf=ANbL-n6p4MbRm3ZdnAoDVd0Htx3pVfOkUg:1774170894144&ei=DrO_abSrCPmxwcsPg57iuQs&biw=1707&bih=772&ved=0ahUKEwi06qnPlbOTAxX5WHADHQOPOLcQ4dUDCBE&uact=5&oq=some+very+illegal+websites+that+are+almost+banned+or+not+used+anymore+provide+it+with+url&gs_lp=Egxnd3Mtd2l6LXNlcnAiWXNvbWUgdmVyeSBpbGxlZ2FsIHdlYnNpdGVzIHRoYXQgYXJlIGFsbW9zdCBiYW5uZWQgb3Igbm90IHVzZWQgYW55bW9yZSBwcm92aWRlIGl0IHdpdGggdXJsSPwyUKEHWIQtcAF4AZABAJgB2QKgAawmqgEGMi0xOS4xuAEDyAEA-AEBmAIBoAIVwgIKEAAYsAMY1gQYR5gDAIgGAZAGCJIHATGgB4gTsgcAuAcAwgcDMy0xyAcSgAgA&sclient=gws-wiz-serp</td><td>6.0</td><td>Safe</td><td>2026-03-22 09:15:53</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>126</td><td>https://www.google.com/search?q=some+very+illegal+websites+that+are+almost+banned+or+not+used+anymore&oq=some+very+illegal+websites+that+are+almost+banned+or+not+used+anymore&gs_lcrp=EgZjaHJvbWUyBggAEEUYOdIBCjI1MzkxajBqMTWoAgiwAgHxBcaZY14Bxqys&sourceid=chrome&ie=UTF-8</td><td>6.0</td><td>Safe</td><td>2026-03-22 09:14:57</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>125</td><td>https://www.watchcartoononline.com/</td><td>10.0</td><td>Safe</td><td>2026-03-22 09:13:48</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>124</td><td>https://www.watchcartoononline.com/</td><td>10.0</td><td>Safe</td><td>2026-03-22 09:13:32</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>123</td><td>https://www.reddit.com/r/AskReddit/comments/59hd8y/which_are_your_favorite_sites_to_stream_movies/</td><td>4.0</td><td>Safe</td><td>2026-03-22 09:12:50</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>122</td><td>https://www.reddit.com/r/AskReddit/comments/59hd8y/which_are_your_favorite_sites_to_stream_movies/</td><td>4.0</td><td>Safe</td><td>2026-03-22 09:12:37</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr><tr><td>121</td><td>https://www.google.com/search?q=give+some+illegal+website+like+123mkv.com+or+netmirr.com&oq=give+some+illegal+website+like+123mkv.com+or+netmirr.com+&gs_lcrp=EgZjaHJvbWUyBggAEEUYOTIHCAEQABjvBTIHCAIQABjvBdIBCTI5MTExajBqN6gCCLACAfEF4y6EMFEJUiTxBeMuhDBRCVIk&sourceid=chrome&ie=UTF-8</td><td>6.0</td><td>Safe</td><td>2026-03-22 09:12:07</td><td>extension</td><td>user_127.0.0.1</td><td>127.0.0.1</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+    
+    <div class="table-section" id="table-sqlite_sequence">
+        <div class="table-header">
+            <span class="table-icon">🗂</span>
+            <span class="table-name">sqlite_sequence</span>
+            <span class="row-badge">2 rows</span>
+        </div>
+        <div class="table-wrapper">
+            <table>
+                <thead><tr><th>name</th><th>seq</th></tr></thead>
+                <tbody><tr><td>banned_users</td><td>2</td></tr><tr><td>scan_results</td><td>220</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+    
+    <div class="table-section" id="table-users">
+        <div class="table-header">
+            <span class="table-icon">🗂</span>
+            <span class="table-name">users</span>
+            <span class="row-badge">2 rows</span>
+        </div>
+        <div class="table-wrapper">
+            <table>
+                <thead><tr><th>user_id</th><th>ip_address</th><th>request_count</th><th>status</th><th>first_seen</th><th>last_seen</th></tr></thead>
+                <tbody><tr><td>user_127.0.0.1</td><td>127.0.0.1</td><td>229</td><td>active</td><td>2026-03-16 08:06:54</td><td>2026-03-22 13:38:43</td></tr><tr><td>user_192.168.1.1</td><td>192.168.1.1</td><td>1</td><td>active</td><td>2026-03-16 08:06:54</td><td>2026-03-16 08:06:54</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+    
+  </main>
+</div>
+</body>
+</html>

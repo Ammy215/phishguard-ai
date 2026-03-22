@@ -393,9 +393,18 @@ def check_domain_spoofing(domain):
 # ---------------------------------------------------------------------------
 #  Feature Extraction (must match training columns)
 # ---------------------------------------------------------------------------
+def _strip_www(domain):
+    """Strip leading 'www.' prefix so www.example.com == example.com for feature purposes."""
+    if domain.startswith("www."):
+        return domain[4:]
+    return domain
+
+
 def extract_features(url):
     parsed = urlparse(url)
-    domain = parsed.hostname or ""
+    raw_domain = parsed.hostname or ""
+    # Normalise: treat www.foo.com identically to foo.com for ML features
+    domain = _strip_www(raw_domain)
     return {
         "URLLength":     len(url),
         "DomainLength":  len(domain),
@@ -935,8 +944,9 @@ def run_heuristics(url):
         flags.append("Long URL (" + str(len(url)) + " chars)")
         score += 5
 
-    # Rule 8: Too many subdomains
-    sub_count = max(domain.count(".") - 1, 0)
+    # Rule 8: Too many subdomains (strip leading www. -- it is never suspicious)
+    sub_domain_check = _strip_www(domain)
+    sub_count = max(sub_domain_check.count(".") - 1, 0)
     if sub_count >= 3:
         flags.append("Too many subdomains (" + str(sub_count) + ") -- common in phishing")
         score += 15

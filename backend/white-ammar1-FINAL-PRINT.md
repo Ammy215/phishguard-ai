@@ -2251,7 +2251,7 @@ Before printing, verify:
 - Original: `white-ammar1-processed.md` (image references removed)
 - Code: See `backend/app.py`, `frontend/src/`, `chrome-extension/`
 - Database: `phishguard.db` (SQLite)
-- Models: `phish_model.joblib`, `phish_rf.joblib`
+- Models: `phish_model.joblib` (in use). An earlier Random Forest model version, `phish_rf.joblib`, has since been removed as unused.
 
 ## ✨ Final Status
 

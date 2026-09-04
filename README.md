@@ -27,3 +27,5 @@ Load `chrome-extension/` as an unpacked extension via `chrome://extensions` (Dev
 The ML classifier is trained on the [PhiUSIIL Phishing URL Dataset](https://archive.ics.uci.edu/dataset/967/phiusiil+phishing+url+dataset) (Prasad & Chandra, 2024, *Computers & Security*, DOI: 10.1016/j.cose.2023.103545) — 235,795 URLs (100,945 phishing / 134,850 legitimate).
 
 The raw CSV isn't committed to this repo. To retrain, download it from UCI and place it at `backend/PhiUSIIL_Phishing_URL_Dataset.csv`, then run `backend/train_model.py`. The trained model (`backend/phish_model.joblib`) is already included and is what the app loads as-is.
+
+An earlier, unused Random Forest model version (`phish_rf.joblib`) has since been removed from the repo.

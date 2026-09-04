@@ -1,3 +1,5 @@
 node_modules/
 .env
 backend/PhiUSIIL_Phishing_URL_Dataset.csv
+backend/phiusiil+phishing+url+dataset.zip
+backend/phishtank.csv
